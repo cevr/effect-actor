@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-export class CastReceipt extends Schema.Class<CastReceipt>("effect-actors/CastReceipt")({
+export class CastReceipt extends Schema.Class<CastReceipt>("effect-actor/CastReceipt")({
   _tag: Schema.Literal("CastReceipt"),
   actorType: Schema.String,
   entityId: Schema.String,

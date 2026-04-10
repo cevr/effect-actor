@@ -100,7 +100,7 @@ const compileRpc = (actorName: string, tag: string, config: OperationConfig): Rp
       const daFn = config["deliverAt"];
 
       const Base = Schema.Class<Record<string, unknown>>(
-        `effect-actors/Actor/${actorName}/${tag}/Payload`,
+        `effect-actor/Actor/${actorName}/${tag}/Payload`,
       )(fields);
 
       class PayloadClass extends Base {}

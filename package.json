@@ -1,9 +1,9 @@
 {
-  "name": "effect-actors",
+  "name": "effect-actor",
   "version": "0.0.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cevr/effect-actors.git"
+    "url": "https://github.com/cevr/effect-actor.git"
   },
   "files": [
     "dist",
