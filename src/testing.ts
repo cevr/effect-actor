@@ -25,7 +25,9 @@ export const testClient = <Name extends string, Ops extends OperationDefinitions
     >,
     (makeClient) =>
       (entityId: string): Effect.Effect<Ref<Ops>> =>
-        Effect.map(makeClient(entityId), (rpcClient) => buildRef(actor.operations, rpcClient)),
+        Effect.map(makeClient(entityId), (rpcClient) =>
+          buildRef(actor.name, entityId, actor.operations, rpcClient),
+        ),
   );
 
 export const testSingleClient = <Name extends string, Op extends OperationDefinition>(
@@ -44,6 +46,6 @@ export const testSingleClient = <Name extends string, Op extends OperationDefini
     (makeClient) =>
       (entityId: string): Effect.Effect<SingleRef<Op>> =>
         Effect.map(makeClient(entityId), (rpcClient) =>
-          buildSingleRef(actor.operationTag, actor.operation, rpcClient),
+          buildSingleRef(actor.name, entityId, actor.operationTag, actor.operation, rpcClient),
         ),
   );

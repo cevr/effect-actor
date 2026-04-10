@@ -69,12 +69,67 @@ describe("Ref.call", () => {
   it.todo("works without MessageStorage (non-persisted path)", () => {});
 });
 
+const CastActor = Actor.make("CastActor", {
+  Process: {
+    payload: { input: Schema.String },
+    success: Schema.String,
+    persisted: true,
+    primaryKey: (p: { input: string }) => p.input,
+  },
+});
+
+const castHandlers = Handlers.handlers(CastActor, {
+  Process: (request: { payload: { input: string } }) =>
+    Effect.succeed(`processed: ${request.payload.input}`),
+});
+
 describe("Ref.cast", () => {
-  it.todo("sends persisted message with discard: true — returns CastReceipt immediately", () => {});
-  it.todo("handler runs to completion after cast returns", () => {});
-  it.todo("receipt contains actorType, entityId, operation, primaryKey", () => {});
+  it("sends persisted message with discard: true — returns CastReceipt immediately", async () => {
+    const receipt = await Effect.gen(function* () {
+      const makeRef = yield* Testing.testClient(CastActor, castHandlers);
+      const ref = yield* makeRef("c-1");
+      return yield* ref.Process.cast({ input: "data" });
+    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+
+    expect(receipt._tag).toBe("CastReceipt");
+  });
+
+  it("receipt contains actorType, entityId, operation, primaryKey", async () => {
+    const receipt = await Effect.gen(function* () {
+      const makeRef = yield* Testing.testClient(CastActor, castHandlers);
+      const ref = yield* makeRef("c-2");
+      return yield* ref.Process.cast({ input: "mykey" });
+    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+
+    expect(receipt.actorType).toBe("CastActor");
+    expect(receipt.entityId).toBe("c-2");
+    expect(receipt.operation).toBe("Process");
+    expect(receipt.primaryKey).toBe("mykey");
+  });
+
+  it("auto-generates primaryKey when payload has no PrimaryKey", async () => {
+    const SimpleActor = Actor.make("Simple", {
+      Do: {
+        payload: { x: Schema.Number },
+        success: Schema.Number,
+        persisted: true,
+      },
+    });
+    const simpleHandlers = Handlers.handlers(SimpleActor, {
+      Do: (req: { payload: { x: number } }) => Effect.succeed(req.payload.x * 2),
+    });
+
+    const receipt = await Effect.gen(function* () {
+      const makeRef = yield* Testing.testClient(SimpleActor, simpleHandlers);
+      const ref = yield* makeRef("s-1");
+      return yield* ref.Do.cast({ x: 5 });
+    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+
+    expect(receipt.primaryKey).toBeDefined();
+    expect(receipt.primaryKey.length).toBeGreaterThan(0);
+  });
+
   it.todo("requires MessageStorage in context — fails loudly without it", () => {});
-  it.todo("auto-generates primaryKey when payload has no PrimaryKey implementation", () => {});
 });
 
 describe("Ref.watch", () => {

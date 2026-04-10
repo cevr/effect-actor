@@ -1,8 +1,39 @@
-import { describe, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
+import { makeCastReceipt } from "../src/receipt.js";
 
 describe("CastReceipt", () => {
-  it.todo("is serializable — roundtrips through JSON", () => {});
-  it.todo("carries actorType, entityId, operation, primaryKey", () => {});
+  it("is serializable — roundtrips through JSON", () => {
+    const receipt = makeCastReceipt({
+      actorType: "MyActor",
+      entityId: "e-1",
+      operation: "DoWork",
+      primaryKey: "pk-1",
+    });
+
+    const json = JSON.stringify(receipt);
+    const parsed = JSON.parse(json);
+    expect(parsed._tag).toBe("CastReceipt");
+    expect(parsed.actorType).toBe("MyActor");
+    expect(parsed.entityId).toBe("e-1");
+    expect(parsed.operation).toBe("DoWork");
+    expect(parsed.primaryKey).toBe("pk-1");
+  });
+
+  it("carries actorType, entityId, operation, primaryKey", () => {
+    const receipt = makeCastReceipt({
+      actorType: "Order",
+      entityId: "ord-123",
+      operation: "Validate",
+      primaryKey: "key-abc",
+    });
+
+    expect(receipt._tag).toBe("CastReceipt");
+    expect(receipt.actorType).toBe("Order");
+    expect(receipt.entityId).toBe("ord-123");
+    expect(receipt.operation).toBe("Validate");
+    expect(receipt.primaryKey).toBe("key-abc");
+  });
+
   it.todo("duplicate primaryKey is idempotent — same receipt for same key", () => {});
 });
 
