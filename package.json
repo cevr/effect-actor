@@ -1,0 +1,87 @@
+{
+  "name": "effect-actors",
+  "version": "0.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cevr/effect-actors.git"
+  },
+  "files": [
+    "dist",
+    "v3/dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./v3": {
+      "import": {
+        "types": "./v3/dist/index.d.ts",
+        "default": "./v3/dist/index.js"
+      }
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "typecheck:v3": "tsgo --noEmit -p v3/tsconfig.json",
+    "lint": "concurrently -n ox,effect -c yellow,blue \"oxlint\" \"bun run lint:effect\"",
+    "lint:ox": "oxlint",
+    "lint:effect": "effect-language-service diagnostics --project tsconfig.lsp.json",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "test": "bun test",
+    "test:v3": "bun test --tsconfig-override=v3/tsconfig.json v3/test/",
+    "test:watch": "bun test --watch",
+    "gate": "concurrently -n type,style,build,test -c blue,yellow,cyan,green \"bun run typecheck\" \"bun run lint && bun run fmt\" \"bun run build\" \"bun run test\"",
+    "build": "tsdown && tsdown --config v3/tsdown.config.ts",
+    "release": "bun run build && changeset publish",
+    "version": "changeset version",
+    "prepare": "lefthook install"
+  },
+  "dependencies": {
+    "@effect/cluster": "0.58.0",
+    "@effect/rpc": "0.75.0",
+    "effect": "4.0.0-beta.43"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^0.6.0",
+    "@changesets/cli": "^2.30.0",
+    "@effect/language-service": "^0.85.1",
+    "@types/bun": "^1.3.11",
+    "@typescript/native-preview": "^7.0.0-dev.20260410.1",
+    "concurrently": "^9.2.1",
+    "effect-bun-test": "^0.3.0",
+    "effect-v3": "npm:effect@^3.21.0",
+    "lefthook": "^2.1.4",
+    "oxfmt": "^0.42.0",
+    "oxlint": "^1.57.0",
+    "tsdown": "^0.21.7",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@effect/cluster": "*",
+    "@effect/rpc": "*",
+    "effect": ">=3.19.16"
+  },
+  "peerDependenciesMeta": {
+    "effect": {
+      "optional": false
+    },
+    "@effect/cluster": {
+      "optional": false
+    },
+    "@effect/rpc": {
+      "optional": false
+    }
+  },
+  "overrides": {
+    "effect": "4.0.0-beta.43"
+  }
+}

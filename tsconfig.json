@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true,
+    "types": ["bun"],
+    "noEmit": true
+  },
+  "include": ["src", "test"],
+  "exclude": ["node_modules"]
+}
