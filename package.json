@@ -63,7 +63,7 @@
   "peerDependencies": {
     "@effect/cluster": "*",
     "@effect/rpc": "*",
-    "effect": ">=4.0.0-beta.1"
+    "effect": ">=4.0.0-beta.46"
   },
   "peerDependenciesMeta": {
     "@effect/cluster": {
