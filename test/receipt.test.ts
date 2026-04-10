@@ -1,5 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import { makeCastReceipt } from "../src/receipt.js";
+import {
+  Defect,
+  Failure,
+  Interrupted,
+  Pending,
+  Success,
+  isFailure,
+  isPending,
+  isSuccess,
+  isTerminal,
+  makeCastReceipt,
+} from "../src/receipt.js";
 
 describe("CastReceipt", () => {
   it("is serializable — roundtrips through JSON", () => {
@@ -37,12 +48,50 @@ describe("CastReceipt", () => {
   it.todo("duplicate primaryKey is idempotent — same receipt for same key", () => {});
 });
 
+describe("PeekResult", () => {
+  it("Pending is the initial state", () => {
+    expect(isPending(Pending)).toBe(true);
+    expect(isTerminal(Pending)).toBe(false);
+  });
+
+  it("Success carries decoded value", () => {
+    const result = Success(42);
+    expect(isSuccess(result)).toBe(true);
+    expect(result._tag).toBe("Success");
+    if (isSuccess(result)) {
+      expect(result.value).toBe(42);
+    }
+    expect(isTerminal(result)).toBe(true);
+  });
+
+  it("Failure carries decoded error", () => {
+    const result = Failure({ code: "NOT_FOUND" });
+    expect(isFailure(result)).toBe(true);
+    if (isFailure(result)) {
+      expect(result.error).toEqual({ code: "NOT_FOUND" });
+    }
+    expect(isTerminal(result)).toBe(true);
+  });
+
+  it("Interrupted is terminal", () => {
+    expect(Interrupted._tag).toBe("Interrupted");
+    expect(isTerminal(Interrupted)).toBe(true);
+  });
+
+  it("Defect carries cause", () => {
+    const result = Defect("kaboom");
+    expect(result._tag).toBe("Defect");
+    if (result._tag === "Defect") {
+      expect(result.cause).toBe("kaboom");
+    }
+    expect(isTerminal(result)).toBe(true);
+  });
+});
+
 describe("Actor.peek", () => {
   it.todo("returns Pending when handler has not completed", () => {});
   it.todo("returns Success with decoded value when handler succeeds", () => {});
   it.todo("returns Failure with decoded error when handler fails", () => {});
-  it.todo("returns Interrupted when handler is interrupted", () => {});
-  it.todo("returns Defect with cause when handler defects", () => {});
   it.todo("requires actor definition for schema decoding — not standalone", () => {});
   it.todo("uses requestIdForPrimaryKey to resolve receipt to Snowflake", () => {});
   it.todo("reads repliesForUnfiltered with resolved Snowflake", () => {});
