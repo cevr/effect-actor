@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { ActorDefinition, OperationDefinitions } from "./actor.js";
+import type { ActorDefinition, OperationDefinition, OperationDefinitions } from "./actor.js";
 
 export type Ref<Ops extends OperationDefinitions> = {
   readonly [K in keyof Ops]: {
@@ -9,6 +9,14 @@ export type Ref<Ops extends OperationDefinitions> = {
         }) => Effect.Effect<unknown, unknown>
       : () => Effect.Effect<unknown, unknown>;
   };
+};
+
+export type SingleRef<Op extends OperationDefinition> = {
+  readonly call: Op["payload"] extends Record<string, unknown>
+    ? (payload: {
+        readonly [F in keyof Op["payload"]]: unknown;
+      }) => Effect.Effect<unknown, unknown>
+    : () => Effect.Effect<unknown, unknown>;
 };
 
 export const buildRef = <Ops extends OperationDefinitions>(
@@ -26,6 +34,20 @@ export const buildRef = <Ops extends OperationDefinitions>(
     };
   }
   return ref as Ref<Ops>;
+};
+
+export const buildSingleRef = <Op extends OperationDefinition>(
+  operationTag: string,
+  operation: Op,
+  rpcClient: Record<string, Function>,
+): SingleRef<Op> => {
+  const hasPayload = operation["payload"] !== undefined;
+  return {
+    call: ((payload?: unknown) => {
+      const fn = rpcClient[operationTag];
+      return hasPayload ? fn?.(payload) : fn?.();
+    }) as SingleRef<Op>["call"],
+  };
 };
 
 export const client = <Name extends string, Ops extends OperationDefinitions>(

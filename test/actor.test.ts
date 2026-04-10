@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Effect, Schema } from "effect";
 import { ShardingConfig } from "effect/unstable/cluster";
+import type { ActorDefinition } from "../src/actor.js";
 import { Actor, Handlers, Testing } from "../src/index.js";
 
 const TestShardingConfig = ShardingConfig.layer({
@@ -42,8 +43,31 @@ describe("Actor.make", () => {
   it.todo("attaches deliverAt schedule from definition", () => {});
 });
 
+const Ping = Actor.single("Ping", {
+  payload: { message: Schema.String },
+  success: Schema.String,
+});
+
+const pingHandlers = Handlers.handlers({ entity: Ping.entity } as unknown as ActorDefinition, {
+  Ping: (request: { payload: { message: string } }) =>
+    Effect.succeed(`pong: ${request.payload.message}`),
+});
+
 describe("Actor.single", () => {
-  it.todo("defines a single-operation actor — no operation namespace on ref", () => {});
+  it("defines a single-operation actor — no operation namespace on ref", async () => {
+    expect(Ping.name).toBe("Ping");
+    expect(Ping._tag).toBe("SingleActorDefinition");
+    expect(Ping.operationTag).toBe("Ping");
+
+    const result = await Effect.gen(function* () {
+      const makeRef = yield* Testing.testSingleClient(Ping, pingHandlers);
+      const ref = yield* makeRef("p-1");
+      return yield* ref.call({ message: "hello" });
+    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+
+    expect(result).toBe("pong: hello");
+  });
+
   it.todo("supports same options as multi-operation (persisted, primaryKey, deliverAt)", () => {});
 });
 

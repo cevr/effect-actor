@@ -1,9 +1,71 @@
-import { describe, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
+import { Effect, Exit, Schema } from "effect";
+import { ShardingConfig } from "effect/unstable/cluster";
+import { Actor, Handlers, Testing } from "../src/index.js";
+
+const TestShardingConfig = ShardingConfig.layer({
+  shardsPerGroup: 300,
+  entityMailboxCapacity: 10,
+  entityTerminationTimeout: 0,
+});
+
+class ValidationError extends Schema.TaggedErrorClass<ValidationError>()("ValidationError", {
+  message: Schema.String,
+}) {}
+
+const Validator = Actor.make("Validator", {
+  Validate: {
+    payload: { input: Schema.String },
+    success: Schema.String,
+    error: ValidationError,
+  },
+});
+
+const validatorHandlers = Handlers.handlers(Validator, {
+  Validate: (request: { payload: { input: string } }) =>
+    request.payload.input === "bad"
+      ? Effect.fail(new ValidationError({ message: "invalid input" }))
+      : Effect.succeed(`validated: ${request.payload.input}`),
+});
 
 describe("Ref.call", () => {
-  it.todo("sends message and awaits handler completion — returns success value", () => {});
-  it.todo("surfaces handler errors in the error channel", () => {});
-  it.todo("surfaces handler defects as defects", () => {});
+  it("sends message and awaits handler completion — returns success value", async () => {
+    const result = await Effect.gen(function* () {
+      const makeRef = yield* Testing.testClient(Validator, validatorHandlers);
+      const ref = yield* makeRef("v-1");
+      return yield* ref.Validate.call({ input: "good" });
+    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+
+    expect(result).toBe("validated: good");
+  });
+
+  it("surfaces handler errors in the error channel", async () => {
+    const exit = await Effect.gen(function* () {
+      const makeRef = yield* Testing.testClient(Validator, validatorHandlers);
+      const ref = yield* makeRef("v-1");
+      return yield* ref.Validate.call({ input: "bad" });
+    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromiseExit);
+
+    expect(Exit.isFailure(exit)).toBe(true);
+  });
+
+  it("surfaces handler defects as defects", async () => {
+    const BoomActor = Actor.make("Boom", {
+      Explode: { success: Schema.Void },
+    });
+    const boomHandlers = Handlers.handlers(BoomActor, {
+      Explode: () => Effect.die("kaboom"),
+    });
+
+    const exit = await Effect.gen(function* () {
+      const makeRef = yield* Testing.testClient(BoomActor, boomHandlers);
+      const ref = yield* makeRef("b-1");
+      return yield* ref.Explode.call();
+    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromiseExit);
+
+    expect(Exit.isFailure(exit)).toBe(true);
+  });
+
   it.todo("works without MessageStorage (non-persisted path)", () => {});
 });
 

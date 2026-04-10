@@ -52,6 +52,36 @@ const compileRpc = (tag: string, def: OperationDefinition): Rpc.Any => {
   return rpc;
 };
 
+export interface SingleActorDefinition<
+  Name extends string = string,
+  Op extends OperationDefinition = OperationDefinition,
+> {
+  readonly _tag: "SingleActorDefinition";
+  readonly name: Name;
+  readonly operation: Op;
+  readonly operationTag: string;
+  readonly entity: ClusterEntity.Entity<Name, Rpc.Any>;
+  readonly rpcs: ReadonlyMap<string, Rpc.Any>;
+}
+
+export const single = <const Name extends string, const Op extends OperationDefinition>(
+  name: Name,
+  operation: Op,
+): SingleActorDefinition<Name, Op> => {
+  const tag = name;
+  const rpc = compileRpc(tag, operation);
+  const entity = Entity.make(name, [rpc]);
+
+  return {
+    _tag: "SingleActorDefinition",
+    name,
+    operation,
+    operationTag: tag,
+    entity,
+    rpcs: new Map([[tag, rpc]]),
+  };
+};
+
 export const make = <const Name extends string, const Ops extends OperationDefinitions>(
   name: Name,
   operations: Ops,
