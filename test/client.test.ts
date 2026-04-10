@@ -18,8 +18,8 @@ class ValidationError extends Schema.TaggedErrorClass<ValidationError>()("Valida
 
 const Validator = Actor.make("Validator", {
   Validate: {
-    input: { input: Schema.String },
-    output: Schema.String,
+    payload: { input: Schema.String },
+    success: Schema.String,
     error: ValidationError,
   },
 });
@@ -90,8 +90,8 @@ describe("Ref.call", () => {
 
 const CastActor = Actor.make("CastActor", {
   Process: {
-    input: { input: Schema.String },
-    output: Schema.String,
+    payload: { input: Schema.String },
+    success: Schema.String,
     persisted: true,
     primaryKey: (p: { input: string }) => p.input,
   },
@@ -125,8 +125,8 @@ describe("Ref.cast", () => {
     Effect.gen(function* () {
       const SimpleActor = Actor.make("Simple", {
         Do: {
-          input: { x: Schema.Number },
-          output: Schema.Number,
+          payload: { x: Schema.Number },
+          success: Schema.Number,
           persisted: true,
         },
       });

@@ -10,13 +10,13 @@ class ProcessError extends Schema.TaggedErrorClass<ProcessError>()("ProcessError
 
 const PeekableActor = Actor.make("PeekableActor", {
   Process: {
-    input: { input: Schema.String },
-    output: Schema.String,
+    payload: { input: Schema.String },
+    success: Schema.String,
     persisted: true,
     primaryKey: (p: { input: string }) => p.input,
   },
   Fail: {
-    input: { input: Schema.String },
+    payload: { input: Schema.String },
     error: ProcessError,
     persisted: true,
     primaryKey: (p: { input: string }) => p.input,
@@ -97,8 +97,8 @@ describe("Actor.peek", () => {
     Effect.gen(function* () {
       const NoPkActor = Actor.make("NoPkActor", {
         Fire: {
-          input: { x: Schema.Number },
-          output: Schema.Number,
+          payload: { x: Schema.Number },
+          success: Schema.Number,
           persisted: true,
         },
       });

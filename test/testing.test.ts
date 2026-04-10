@@ -14,12 +14,12 @@ const test = it.scopedLive.layer(TestShardingConfig);
 
 const Echo = Actor.make("Echo", {
   Say: {
-    input: { msg: Schema.String },
-    output: Schema.String,
+    payload: { msg: Schema.String },
+    success: Schema.String,
   },
   Fire: {
-    input: { x: Schema.Number },
-    output: Schema.Number,
+    payload: { x: Schema.Number },
+    success: Schema.Number,
     persisted: true,
     primaryKey: (p: { x: number }) => String(p.x),
   },
@@ -63,8 +63,8 @@ describe("Actor.Test", () => {
 
       const Tracker = Actor.make("Tracker", {
         Track: {
-          input: { item: Schema.String },
-          output: Schema.String,
+          payload: { item: Schema.String },
+          success: Schema.String,
         },
       });
 

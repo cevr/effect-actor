@@ -15,11 +15,11 @@ const effectTest = it.scopedLive.layer(TestShardingConfig);
 
 const Counter = Actor.make("Counter", {
   Increment: {
-    input: { amount: Schema.Number },
-    output: Schema.Number,
+    payload: { amount: Schema.Number },
+    success: Schema.Number,
   },
   GetCount: {
-    output: Schema.Number,
+    success: Schema.Number,
   },
 });
 
@@ -44,7 +44,7 @@ describe("Actor.make", () => {
   test("attaches persisted annotation when persisted: true", () => {
     const Persisted = Actor.make("Persisted", {
       Save: {
-        input: { data: Schema.String },
+        payload: { data: Schema.String },
         persisted: true,
       },
     });
@@ -56,7 +56,7 @@ describe("Actor.make", () => {
   test("attaches primaryKey extractor from definition", () => {
     const WithPK = Actor.make("WithPK", {
       Op: {
-        input: { id: Schema.String },
+        payload: { id: Schema.String },
         persisted: true,
         primaryKey: (p: { id: string }) => p.id,
       },
@@ -132,7 +132,7 @@ describe("deliverAt", () => {
   test("attaches DeliverAt.symbol to payload instances when deliverAt is configured", () => {
     const Delayed = Actor.make("Delayed", {
       Process: {
-        input: { id: Schema.String, deliverAt: Schema.DateTimeUtc },
+        payload: { id: Schema.String, deliverAt: Schema.DateTimeUtc },
         persisted: true,
         primaryKey: (p: { id: string }) => p.id,
         deliverAt: (p: { deliverAt: DateTime.DateTime }) => p.deliverAt,
@@ -154,7 +154,7 @@ describe("deliverAt", () => {
   test("attaches PrimaryKey.symbol to payload instances when primaryKey is configured", () => {
     const WithPK = Actor.make("WithPKPayload", {
       Op: {
-        input: { id: Schema.String },
+        payload: { id: Schema.String },
         primaryKey: (p: { id: string }) => p.id,
       },
     });
@@ -172,7 +172,7 @@ describe("deliverAt", () => {
   test("payload instances without primaryKey or deliverAt have neither symbol", () => {
     const Plain = Actor.make("Plain", {
       Op: {
-        input: { value: Schema.String },
+        payload: { value: Schema.String },
       },
     });
 
@@ -189,7 +189,7 @@ describe("deliverAt", () => {
   test("deliverAt without primaryKey is valid (delayed but not deduped)", () => {
     const DelayedOnly = Actor.make("DelayedOnly", {
       Fire: {
-        input: { when: Schema.DateTimeUtc },
+        payload: { when: Schema.DateTimeUtc },
         persisted: true,
         deliverAt: (p: { when: DateTime.DateTime }) => p.when,
       },
@@ -218,8 +218,8 @@ describe("deliverAt", () => {
 
     const WithCustom = Actor.make("WithCustom", {
       Process: {
-        input: CustomPayload,
-        output: Schema.String,
+        payload: CustomPayload,
+        success: Schema.String,
         persisted: true,
       },
     });
@@ -246,7 +246,7 @@ describe("deliverAt", () => {
 
     const Scheduled = Actor.make("Scheduled", {
       Run: {
-        input: ScheduledPayload,
+        payload: ScheduledPayload,
         persisted: true,
       },
     });

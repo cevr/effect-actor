@@ -10,20 +10,20 @@ class OrderError extends Schema.TaggedErrorClass<OrderError>()("OrderError", {
 
 const OrderActor = Actor.make("Order", {
   Place: {
-    input: { item: Schema.String, qty: Schema.Number },
-    output: Schema.String,
+    payload: { item: Schema.String, qty: Schema.Number },
+    success: Schema.String,
     persisted: true,
     primaryKey: (p: { item: string; qty: number }) => `${p.item}-${p.qty}`,
   },
   Cancel: {
-    input: { reason: Schema.String },
+    payload: { reason: Schema.String },
     error: OrderError,
     persisted: true,
     primaryKey: (p: { reason: string }) => p.reason,
   },
   QuickCheck: {
-    input: { id: Schema.String },
-    output: Schema.String,
+    payload: { id: Schema.String },
+    success: Schema.String,
   },
 });
 

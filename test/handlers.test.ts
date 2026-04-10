@@ -14,11 +14,11 @@ const test = it.scopedLive.layer(TestShardingConfig);
 
 const Counter = Actor.make("Counter", {
   Increment: {
-    input: { amount: Schema.Number },
-    output: Schema.Number,
+    payload: { amount: Schema.Number },
+    success: Schema.Number,
   },
   GetCount: {
-    output: Schema.String,
+    success: Schema.String,
   },
 });
 
@@ -48,8 +48,8 @@ describe("Actor.toLayer", () => {
     Effect.gen(function* () {
       const GenActor = Actor.make("GenActor", {
         Compute: {
-          input: { x: Schema.Number },
-          output: Schema.Number,
+          payload: { x: Schema.Number },
+          success: Schema.Number,
         },
       });
 
@@ -75,7 +75,7 @@ describe("Actor.toLayer", () => {
 
       const ErrActor = Actor.make("ErrActor", {
         Fail: {
-          input: { input: Schema.String },
+          payload: { input: Schema.String },
           error: HandlerError,
         },
       });
@@ -96,8 +96,8 @@ describe("Actor.toLayer", () => {
 
       const InspectActor = Actor.make("InspectActor", {
         Inspect: {
-          input: { value: Schema.String },
-          output: Schema.String,
+          payload: { value: Schema.String },
+          success: Schema.String,
         },
       });
 

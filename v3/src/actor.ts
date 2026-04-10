@@ -11,12 +11,12 @@ import { makeCastReceipt } from "./receipt.js";
 // ── Operation DSL ──────────────────────────────────────────────────────────
 
 export interface OperationDef {
-  readonly input?: Schema.Schema.Any | Schema.Struct.Fields;
-  readonly output?: Schema.Schema.Any;
+  readonly payload?: Schema.Schema.Any | Schema.Struct.Fields;
+  readonly success?: Schema.Schema.Any;
   readonly error?: Schema.Schema.Any;
   readonly persisted?: boolean;
-  readonly primaryKey?: (input: never) => string;
-  readonly deliverAt?: (input: never) => DateTime.DateTime;
+  readonly primaryKey?: (payload: never) => string;
+  readonly deliverAt?: (payload: never) => DateTime.DateTime;
 }
 
 export type OperationDefs = Record<string, OperationDef>;
@@ -32,16 +32,16 @@ const RESERVED_KEYS = new Set<string>(["_tag", "_meta", "$is", "Context"]);
 
 // ── Type-level Rpc mirror ──────────────────────────────────────────────────
 
-type InputOf<C extends OperationDef> = C extends {
-  readonly input: infer P extends Schema.Schema.Any;
+type PayloadOf<C extends OperationDef> = C extends {
+  readonly payload: infer P extends Schema.Schema.Any;
 }
   ? P
-  : C extends { readonly input: infer F extends Schema.Struct.Fields }
+  : C extends { readonly payload: infer F extends Schema.Struct.Fields }
     ? Schema.Struct<F>
     : typeof Schema.Void;
 
-type OutputOf<C extends OperationDef> = C extends {
-  readonly output: infer S extends Schema.Schema.Any;
+type SuccessOf<C extends OperationDef> = C extends {
+  readonly success: infer S extends Schema.Schema.Any;
 }
   ? S
   : typeof Schema.Void;
@@ -54,8 +54,8 @@ type ErrorOf<C extends OperationDef> = C extends {
 
 type DefRpc<Tag extends string, C extends OperationDef> = Rpc.Rpc<
   Tag,
-  InputOf<C>,
-  OutputOf<C>,
+  PayloadOf<C>,
+  SuccessOf<C>,
   ErrorOf<C>
 >;
 
@@ -92,37 +92,37 @@ export type OperationError<V> = V extends {
 
 type OperationValue<Name extends string, Tag extends string, C extends OperationDef> = {
   readonly _tag: Tag;
-} & InputFieldsType<C> &
-  OperationBrand<Name, Tag, Schema.Schema.Type<OutputOf<C>>, Schema.Schema.Type<ErrorOf<C>>>;
+} & PayloadFieldsType<C> &
+  OperationBrand<Name, Tag, Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>;
 
-type InputFieldsType<C extends OperationDef> = C extends {
-  readonly input: infer F extends Schema.Struct.Fields;
+type PayloadFieldsType<C extends OperationDef> = C extends {
+  readonly payload: infer F extends Schema.Struct.Fields;
 }
   ? { readonly [K in keyof F]: Schema.Schema.Type<F[K] extends Schema.Schema.Any ? F[K] : never> }
-  : C extends { readonly input: infer P extends Schema.Schema.Any }
+  : C extends { readonly payload: infer P extends Schema.Schema.Any }
     ? Schema.Schema.Type<P>
     : {};
 
-type OperationConstructorInput<C extends OperationDef> = C extends {
-  readonly input: infer F extends Schema.Struct.Fields;
+type OperationConstructorPayload<C extends OperationDef> = C extends {
+  readonly payload: infer F extends Schema.Struct.Fields;
 }
   ? {} extends {
       [K in keyof F]: Schema.Schema.Type<F[K] extends Schema.Schema.Any ? F[K] : never>;
     }
     ? []
     : [
-        input: {
+        payload: {
           readonly [K in keyof F]: Schema.Schema.Type<
             F[K] extends Schema.Schema.Any ? F[K] : never
           >;
         },
       ]
-  : C extends { readonly input: infer _P extends Schema.Schema.Any }
-    ? [input: unknown]
+  : C extends { readonly payload: infer _P extends Schema.Schema.Any }
+    ? [payload: unknown]
     : [];
 
 type OperationConstructor<Name extends string, Tag extends string, C extends OperationDef> = (
-  ...args: OperationConstructorInput<C>
+  ...args: OperationConstructorPayload<C>
 ) => OperationValue<Name, Tag, C>;
 
 // ── Union of all OperationValues for an actor ──────────────────────────────
@@ -143,13 +143,13 @@ export interface ActorRef<Name extends string, Defs extends OperationDefs> {
 // ── Handler types ──────────────────────────────────────────────────────────
 
 type HandlerRequest<Tag extends string, C extends OperationDef> = {
-  readonly operation: { readonly _tag: Tag } & InputFieldsType<C>;
+  readonly operation: { readonly _tag: Tag } & PayloadFieldsType<C>;
   readonly request: unknown;
 };
 
 type ActorHandlers<Defs extends OperationDefs> = {
   readonly [Tag in keyof Defs & string]: (req: HandlerRequest<Tag, Defs[Tag]>) => Effect.Effect<
-    Schema.Schema.Type<OutputOf<Defs[Tag]>>,
+    Schema.Schema.Type<SuccessOf<Defs[Tag]>>,
     Schema.Schema.Type<ErrorOf<Defs[Tag]>>,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- handler requirements must be open
     any
@@ -212,15 +212,15 @@ export type ActorObject<
 
 const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any => {
   const options: Record<string, unknown> = {};
-  const input = def["input"];
+  const payload = def["payload"];
   const pkFn = def["primaryKey"];
   const daFn = def["deliverAt"];
 
-  if (input) {
-    if (Schema.isSchema(input)) {
-      options["payload"] = input;
+  if (payload) {
+    if (Schema.isSchema(payload)) {
+      options["payload"] = payload;
     } else {
-      const fields = input as Schema.Struct.Fields;
+      const fields = payload as Schema.Struct.Fields;
 
       const Base = Schema.Class<Record<string, unknown>>(
         `effect-actor/${actorName}/${tag}/Payload`,
@@ -246,7 +246,7 @@ const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any 
     }
   }
 
-  if (def["output"]) options["success"] = def["output"];
+  if (def["success"]) options["success"] = def["success"];
   if (def["error"]) options["error"] = def["error"];
 
   let rpc: Rpc.Any = (RpcMod.make as Function)(tag, options) as Rpc.Any;
@@ -423,15 +423,15 @@ const buildActorRef = <Name extends string, Defs extends OperationDefs>(
       const tag = op["_tag"];
       const fn = client[tag];
       const def = definitions[tag] as OperationDef | undefined;
-      const hasInput = def?.["input"] !== undefined;
-      return hasInput ? fn?.(op) : fn?.();
+      const hasPayload = def?.["payload"] !== undefined;
+      return hasPayload ? fn?.(op) : fn?.();
     },
     cast: (op: { readonly _tag: string; readonly [key: string]: unknown }) => {
       const tag = op["_tag"];
       const fn = client[tag];
       const def = definitions[tag] as OperationDef | undefined;
-      const hasInput = def?.["input"] !== undefined;
-      const discardCall = hasInput
+      const hasPayload = def?.["payload"] !== undefined;
+      const discardCall = hasPayload
         ? fn?.(op, { discard: true })
         : fn?.(undefined, { discard: true });
       return Effect.map(discardCall ?? Effect.void, () =>
