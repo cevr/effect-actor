@@ -1,4 +1,4 @@
-import { Effect, Option } from "effect";
+import { Duration, Effect, Option, Schedule, Stream } from "effect";
 import {
   EntityAddress,
   EntityId,
@@ -10,7 +10,7 @@ import type { MalformedMessage, PersistenceError } from "effect/unstable/cluster
 import type { RpcMessage } from "effect/unstable/rpc";
 import type { ActorDefinition, OperationConfigs } from "./actor.js";
 import type { CastReceipt, PeekResult } from "./receipt.js";
-import { Defect, Failure, Interrupted, Pending, Success } from "./receipt.js";
+import { Defect, Failure, Interrupted, isTerminal, Pending, Success } from "./receipt.js";
 
 // ── Errors ────────────────────────────────────────────────────────────────
 
@@ -70,6 +70,32 @@ export const peek = <Name extends string, Ops extends OperationConfigs>(
 
     return mapExitToPeekResult(last.exit);
   });
+};
+
+// ── watch ─────────────────────────────────────────────────────────────────
+
+export const watch = <Name extends string, Ops extends OperationConfigs>(
+  actor: ActorDefinition<Name, Ops>,
+  receipt: CastReceipt,
+  options?: { readonly interval?: Duration.Input },
+): Stream.Stream<
+  PeekResult,
+  PersistenceError | MalformedMessage,
+  MessageStorage.MessageStorage | Sharding.Sharding
+> => {
+  const interval = options?.interval ?? Duration.millis(200);
+  return Stream.fromEffectSchedule(peek(actor, receipt), Schedule.spaced(interval)).pipe(
+    Stream.changesWith(peekResultEquals),
+    Stream.takeUntil(isTerminal),
+  );
+};
+
+const peekResultEquals = (a: PeekResult, b: PeekResult): boolean => {
+  if (a._tag !== b._tag) return false;
+  if (a._tag === "Success" && b._tag === "Success") return a.value === b.value;
+  if (a._tag === "Failure" && b._tag === "Failure") return a.error === b.error;
+  if (a._tag === "Defect" && b._tag === "Defect") return a.cause === b.cause;
+  return true;
 };
 
 // ── Exit → PeekResult mapping ────────────────────────────────────────────

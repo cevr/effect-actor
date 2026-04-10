@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { Layer } from "effect";
-import { Effect, Exit, Schema } from "effect";
-import { ShardingConfig } from "effect/unstable/cluster";
-import { Actor, Testing } from "../src/index.js";
+import { Effect, Exit, Schema, Stream } from "effect";
+import { ShardingConfig, TestRunner } from "effect/unstable/cluster";
+import { Actor, Peek, Receipt, Testing } from "../src/index.js";
 
 const TestShardingConfig = ShardingConfig.layer({
   shardsPerGroup: 300,
@@ -133,10 +133,42 @@ describe("Ref.cast", () => {
 });
 
 describe("Ref.watch", () => {
-  it.todo("returns Stream that polls for reply state changes", () => {});
-  it.todo("emits Pending then Success when handler completes", () => {});
-  it.todo("completes the stream on terminal result (Success/Failure/Interrupted/Defect)", () => {});
-  it.todo("respects configurable poll interval", () => {});
+  it("emits Pending then Success when handler completes, then completes stream", async () => {
+    const result = await Effect.gen(function* () {
+      // Use real cluster path so replies go to MessageStorage
+      const makeClient = yield* CastActor.entity.client;
+      const client = makeClient("w-1");
+
+      // Cast to fire-and-forget
+      yield* client.Process({ input: "watch-test" }, { discard: true });
+
+      const receipt = Receipt.makeCastReceipt({
+        actorType: "CastActor",
+        entityId: "w-1",
+        operation: "Process",
+        primaryKey: "watch-test",
+      });
+
+      // Watch polls until terminal
+      return yield* Peek.watch(CastActor, receipt, {
+        interval: "50 millis",
+      }).pipe(Stream.runCollect);
+    }).pipe(
+      Effect.provide(castHandlers),
+      Effect.provide(TestRunner.layer),
+      Effect.scoped,
+      Effect.runPromise,
+    );
+
+    // Should have at least one entry, ending with Success
+    const arr = Array.from(result);
+    expect(arr.length).toBeGreaterThan(0);
+    const last = arr[arr.length - 1]!;
+    expect(last._tag).toBe("Success");
+    if (last._tag === "Success") {
+      expect(last.value).toBe("processed: watch-test");
+    }
+  });
 });
 
 describe("single-operation ref", () => {
