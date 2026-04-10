@@ -1,12 +1,42 @@
-import { describe, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
+import { Effect, Schema } from "effect";
+import { WorkflowEngine } from "effect/unstable/workflow";
+import { Workflow as WF } from "../src/index.js";
+
+const Greeter = WF.workflow("Greeter", {
+  payload: { name: Schema.String },
+  idempotencyKey: (p) => (p as Record<string, string>)["name"] ?? "",
+  success: Schema.String,
+});
+
+const greeterHandler = WF.workflowHandlers(Greeter, (payload: { name: string }) =>
+  Effect.succeed(`hello ${payload.name}`),
+);
 
 describe("Actor.workflow", () => {
-  it.todo("defines a workflow-backed actor with payload/success/error schemas", () => {});
+  it("defines a workflow-backed actor with payload/success/error schemas", () => {
+    expect(Greeter._tag).toBe("WorkflowDefinition");
+    expect(Greeter.name).toBe("Greeter");
+    expect(Greeter.workflow).toBeDefined();
+  });
+
   it.todo("idempotencyKey generates deterministic executionId", () => {});
 });
 
 describe("Workflow Ref.call", () => {
-  it.todo("executes workflow and blocks until Complete — returns success value", () => {});
+  it("executes workflow and blocks until Complete — returns success value", async () => {
+    const result = await Effect.gen(function* () {
+      const ref = WF.workflowClient(Greeter)("greeter-1");
+      return yield* ref.call({ name: "world" });
+    }).pipe(
+      Effect.provide(greeterHandler),
+      Effect.provide(WorkflowEngine.layerMemory),
+      Effect.runPromise,
+    );
+
+    expect(result).toBe("hello world");
+  });
+
   it.todo("surfaces workflow errors in the error channel", () => {});
   it.todo("retries through Suspended states until Complete", () => {});
 });
