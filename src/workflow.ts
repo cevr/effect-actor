@@ -77,6 +77,42 @@ export const workflowClient = <Name extends string>(
   });
 };
 
+export const workflowPoll = <Name extends string>(
+  def: WorkflowDefinition<Name>,
+  executionId: string,
+): Effect.Effect<
+  | { _tag: "Pending" }
+  | { _tag: "Success"; value: unknown }
+  | { _tag: "Failure"; error: unknown }
+  | { _tag: "Suspended" },
+  never,
+  never
+> => {
+  const wf = def.workflow as Workflow.Any & { poll: Function };
+  return Effect.map(wf.poll(executionId) as Effect.Effect<unknown>, (optResult: unknown) => {
+    const opt = optResult as {
+      _tag: string;
+      value?: { _tag: string; exit?: { _tag: string; value?: unknown; cause?: unknown } };
+    };
+    if (opt._tag === "None") return { _tag: "Pending" as const };
+    const result = opt.value;
+    if (result?._tag === "Suspended") return { _tag: "Suspended" as const };
+    if (result?._tag === "Complete") {
+      const exit = result.exit;
+      if (exit?._tag === "Success") return { _tag: "Success" as const, value: exit.value };
+      return { _tag: "Failure" as const, error: exit?.cause };
+    }
+    return { _tag: "Pending" as const };
+  }) as Effect.Effect<
+    | { _tag: "Pending" }
+    | { _tag: "Success"; value: unknown }
+    | { _tag: "Failure"; error: unknown }
+    | { _tag: "Suspended" },
+    never,
+    never
+  >;
+};
+
 export const workflowHandlers = <Name extends string>(
   def: WorkflowDefinition<Name>,
   handler: Function,

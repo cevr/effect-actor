@@ -42,14 +42,51 @@ describe("Workflow Ref.call", () => {
 });
 
 describe("Workflow Ref.cast", () => {
-  it.todo("executes with discard: true — returns WorkflowReceipt with executionId", () => {});
+  it("executes with discard: true — returns WorkflowReceipt with executionId", async () => {
+    const receipt = await Effect.gen(function* () {
+      const ref = WF.workflowClient(Greeter)("greeter-cast-1");
+      return yield* ref.cast({ name: "cast-test" });
+    }).pipe(
+      Effect.provide(greeterHandler),
+      Effect.provide(WorkflowEngine.layerMemory),
+      Effect.scoped,
+      Effect.timeout("3 seconds"),
+      Effect.runPromise,
+    );
+
+    expect(receipt?._tag).toBe("WorkflowReceipt");
+    expect(receipt?.workflowName).toBe("Greeter");
+    expect(receipt?.executionId).toBeDefined();
+    expect(typeof receipt?.executionId).toBe("string");
+    expect(receipt!.executionId.length).toBeGreaterThan(0);
+  });
+
   it.todo("duplicate cast with same idempotencyKey is idempotent", () => {});
 });
 
 describe("Workflow peek", () => {
+  it("returns Success when workflow is Complete", async () => {
+    const result = await Effect.gen(function* () {
+      const ref = WF.workflowClient(Greeter)("greeter-peek-1");
+      const receipt = yield* ref.cast({ name: "peek-test" });
+
+      // Wait for workflow to complete
+      yield* Effect.sleep("100 millis");
+
+      return yield* WF.workflowPoll(Greeter, receipt.executionId);
+    }).pipe(
+      Effect.provide(greeterHandler),
+      Effect.provide(WorkflowEngine.layerMemory),
+      Effect.scoped,
+      Effect.timeout("5 seconds"),
+      Effect.runPromise,
+    );
+
+    expect(result?._tag).toBe("Success");
+  });
+
   it.todo("returns Pending when workflow has not started", () => {});
   it.todo("returns Pending when workflow is Suspended", () => {});
-  it.todo("returns Success/Failure when workflow is Complete", () => {});
   it.todo("uses workflow.poll(executionId) under the hood", () => {});
 });
 
