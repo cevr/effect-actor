@@ -5,14 +5,14 @@ export class CastReceipt extends Schema.Class<CastReceipt>("effect-actor/CastRec
   actorType: Schema.String,
   entityId: Schema.String,
   operation: Schema.String,
-  primaryKey: Schema.String,
+  primaryKey: Schema.optional(Schema.String),
 }) {}
 
 export const makeCastReceipt = (options: {
   readonly actorType: string;
   readonly entityId: string;
   readonly operation: string;
-  readonly primaryKey: string;
+  readonly primaryKey?: string | undefined;
 }): CastReceipt =>
   new CastReceipt({
     _tag: "CastReceipt",

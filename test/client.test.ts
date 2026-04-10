@@ -112,7 +112,7 @@ describe("Ref.cast", () => {
       expect(receipt.primaryKey).toBe("mykey");
     }));
 
-  test("auto-generates primaryKey when payload has no PrimaryKey", () =>
+  test("cast without primaryKey returns receipt with no primaryKey", () =>
     Effect.gen(function* () {
       const SimpleActor = Actor.make("Simple", {
         Do: {
@@ -128,8 +128,7 @@ describe("Ref.cast", () => {
       const makeRef = yield* Testing.testClient(SimpleActor, simpleHandlers);
       const ref = yield* makeRef("s-1");
       const receipt = yield* ref["Do"]!.cast({ x: 5 });
-      expect(receipt.primaryKey).toBeDefined();
-      expect(receipt.primaryKey.length).toBeGreaterThan(0);
+      expect(receipt.primaryKey).toBeUndefined();
     }));
 
   test("cast still returns CastReceipt even without cluster persistence", () =>

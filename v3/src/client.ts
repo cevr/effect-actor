@@ -49,8 +49,8 @@ export const buildRef = <Rpcs extends Rpc.Any, E>(
             entityId,
             operation: tag,
             primaryKey: op["primaryKey"]
-              ? (op["primaryKey"] as Function)(payload)
-              : crypto.randomUUID(),
+              ? ((op["primaryKey"] as Function)(payload) as string)
+              : undefined,
           }),
         );
       },

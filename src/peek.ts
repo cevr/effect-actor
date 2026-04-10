@@ -29,13 +29,15 @@ export const peek = <Name extends string, Ops extends OperationConfigs>(
   receipt: CastReceipt,
 ): Effect.Effect<
   PeekResult,
-  PersistenceError | MalformedMessage,
+  PersistenceError | MalformedMessage | NoPrimaryKeyError,
   MessageStorage.MessageStorage | Sharding.Sharding
 > => {
   const op = actor.operations[receipt.operation];
-  if (!op || !op["primaryKey"]) {
-    return Effect.die(new NoPrimaryKeyError(receipt));
+  if (!op || !op["primaryKey"] || !receipt.primaryKey) {
+    return Effect.fail(new NoPrimaryKeyError(receipt));
   }
+
+  const primaryKey = receipt.primaryKey;
 
   return Effect.gen(function* () {
     const sharding = yield* Sharding.Sharding;
@@ -54,7 +56,7 @@ export const peek = <Name extends string, Ops extends OperationConfigs>(
     const maybeRequestId = yield* storage.requestIdForPrimaryKey({
       address,
       tag: receipt.operation,
-      id: receipt.primaryKey,
+      id: primaryKey,
     });
 
     if (Option.isNone(maybeRequestId)) {
@@ -80,7 +82,7 @@ export const watch = <Name extends string, Ops extends OperationConfigs>(
   options?: { readonly interval?: Duration.Input },
 ): Stream.Stream<
   PeekResult,
-  PersistenceError | MalformedMessage,
+  PersistenceError | MalformedMessage | NoPrimaryKeyError,
   MessageStorage.MessageStorage | Sharding.Sharding
 > => {
   const interval = options?.interval ?? Duration.millis(200);
