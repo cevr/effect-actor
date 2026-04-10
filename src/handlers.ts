@@ -1,4 +1,4 @@
-import type { Effect, Layer } from "effect";
+import type { Effect } from "effect";
 import type { Entity } from "effect/unstable/cluster";
 import type { Rpc } from "effect/unstable/rpc";
 import type { ActorDefinition, ActorRpcs, OperationConfigs } from "./actor.js";
@@ -15,15 +15,15 @@ export const handlers = <
   Ops extends OperationConfigs,
   Rpcs extends Rpc.Any = ActorRpcs<Ops>,
   Handlers extends Entity.HandlersFrom<Rpcs> = Entity.HandlersFrom<Rpcs>,
+  RX = never,
 >(
   actor: ActorDefinition<Name, Ops, Rpcs>,
-  build: Handlers | Effect.Effect<Handlers>,
+  build: Handlers | Effect.Effect<Handlers, never, RX>,
   options?: HandlerOptions,
-): Layer.Layer<never> => {
-  return actor.entity.toLayer(build as Entity.HandlersFrom<Rpcs>, {
+) =>
+  actor.entity.toLayer(build, {
     spanAttributes: options?.spanAttributes,
     maxIdleTime: options?.maxIdleTime,
     concurrency: options?.concurrency,
     mailboxCapacity: options?.mailboxCapacity,
-  }) as Layer.Layer<never>;
-};
+  });
