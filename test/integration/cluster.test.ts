@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "effect-bun-test";
 import type { Layer } from "effect";
 import { Effect, Schema } from "effect";
 import { TestRunner } from "effect/unstable/cluster";
@@ -36,31 +36,23 @@ const orderHandlers = OrderActor.entity.toLayer({
 
 const TestCluster = TestRunner.layer;
 
+const test = it.scopedLive;
+
 describe("cluster integration", () => {
-  it("call round-trip through Entity", async () => {
-    const result = await Effect.gen(function* () {
+  test("call round-trip through Entity", () =>
+    Effect.gen(function* () {
       const makeClient = yield* OrderActor.entity.client;
       const client = makeClient("ord-1");
-      return yield* client.Place({ item: "widget", qty: 3 });
-    }).pipe(
-      Effect.provide(orderHandlers),
-      Effect.provide(TestCluster),
-      Effect.scoped,
-      Effect.runPromise,
-    );
+      const result = yield* client.Place({ item: "widget", qty: 3 });
+      expect(result).toBe("order: widget x3");
+    }).pipe(Effect.provide(orderHandlers), Effect.provide(TestCluster)));
 
-    expect(result).toBe("order: widget x3");
-  });
-
-  it("cast -> peek round-trip with persistence", async () => {
-    const result = await Effect.gen(function* () {
+  test("cast -> peek round-trip with persistence", () =>
+    Effect.gen(function* () {
       const makeClient = yield* OrderActor.entity.client;
       const client = makeClient("ord-2");
 
-      // Cast via discard: true
       yield* client.Place({ item: "gadget", qty: 1 }, { discard: true });
-
-      // Wait for handler to complete
       yield* Effect.sleep("100 millis");
 
       const receipt = Receipt.makeCastReceipt({
@@ -70,22 +62,15 @@ describe("cluster integration", () => {
         primaryKey: "gadget-1",
       });
 
-      return yield* Peek.peek(OrderActor, receipt);
-    }).pipe(
-      Effect.provide(orderHandlers),
-      Effect.provide(TestCluster),
-      Effect.scoped,
-      Effect.runPromise,
-    );
+      const result = yield* Peek.peek(OrderActor, receipt);
+      expect(result._tag).toBe("Success");
+      if (result._tag === "Success") {
+        expect(result.value).toBe("order: gadget x1");
+      }
+    }).pipe(Effect.provide(orderHandlers), Effect.provide(TestCluster)));
 
-    expect(result._tag).toBe("Success");
-    if (result._tag === "Success") {
-      expect(result.value).toBe("order: gadget x1");
-    }
-  });
-
-  it("peek returns Pending then Success as handler completes", async () => {
-    const result = await Effect.gen(function* () {
+  test("peek returns Pending then Success as handler completes", () =>
+    Effect.gen(function* () {
       const makeClient = yield* OrderActor.entity.client;
       const client = makeClient("ord-3");
 
@@ -96,31 +81,21 @@ describe("cluster integration", () => {
         primaryKey: "slow-1",
       });
 
-      // Peek before any message sent — should be Pending
       const before = yield* Peek.peek(OrderActor, receipt);
       expect(before._tag).toBe("Pending");
 
-      // Now send the message
       yield* client.Place({ item: "slow", qty: 1 }, { discard: true });
       yield* Effect.sleep("100 millis");
 
-      return yield* Peek.peek(OrderActor, receipt);
-    }).pipe(
-      Effect.provide(orderHandlers),
-      Effect.provide(TestCluster),
-      Effect.scoped,
-      Effect.runPromise,
-    );
+      const result = yield* Peek.peek(OrderActor, receipt);
+      expect(result._tag).toBe("Success");
+    }).pipe(Effect.provide(orderHandlers), Effect.provide(TestCluster)));
 
-    expect(result._tag).toBe("Success");
-  });
-
-  it("failure/defect decode correctly from WithExit", async () => {
-    const result = await Effect.gen(function* () {
+  test("failure/defect decode correctly from WithExit", () =>
+    Effect.gen(function* () {
       const makeClient = yield* OrderActor.entity.client;
       const client = makeClient("ord-4");
 
-      // Send a message that will fail
       yield* client.Cancel({ reason: "test-fail" }).pipe(Effect.option);
 
       const receipt = Receipt.makeCastReceipt({
@@ -130,26 +105,17 @@ describe("cluster integration", () => {
         primaryKey: "test-fail",
       });
 
-      return yield* Peek.peek(OrderActor, receipt);
-    }).pipe(
-      Effect.provide(orderHandlers),
-      Effect.provide(TestCluster),
-      Effect.scoped,
-      Effect.runPromise,
-    );
+      const result = yield* Peek.peek(OrderActor, receipt);
+      expect(result._tag).toBe("Failure");
+    }).pipe(Effect.provide(orderHandlers), Effect.provide(TestCluster)));
 
-    expect(result._tag).toBe("Failure");
-  });
-
-  it("duplicate primaryKey is idempotent", async () => {
-    const result = await Effect.gen(function* () {
+  test("duplicate primaryKey is idempotent", () =>
+    Effect.gen(function* () {
       const makeClient = yield* OrderActor.entity.client;
       const client = makeClient("ord-5");
 
-      // Send same message twice with same primaryKey
       yield* client.Place({ item: "dup", qty: 1 }, { discard: true });
       yield* client.Place({ item: "dup", qty: 1 }, { discard: true });
-
       yield* Effect.sleep("100 millis");
 
       const receipt = Receipt.makeCastReceipt({
@@ -159,30 +125,15 @@ describe("cluster integration", () => {
         primaryKey: "dup-1",
       });
 
-      return yield* Peek.peek(OrderActor, receipt);
-    }).pipe(
-      Effect.provide(orderHandlers),
-      Effect.provide(TestCluster),
-      Effect.scoped,
-      Effect.runPromise,
-    );
+      const result = yield* Peek.peek(OrderActor, receipt);
+      expect(result._tag).toBe("Success");
+    }).pipe(Effect.provide(orderHandlers), Effect.provide(TestCluster)));
 
-    // Should have a result (not crash from duplicate)
-    expect(result._tag).toBe("Success");
-  });
-
-  it("non-persisted call works without MessageStorage", async () => {
-    const result = await Effect.gen(function* () {
+  test("non-persisted call works without MessageStorage", () =>
+    Effect.gen(function* () {
       const makeClient = yield* OrderActor.entity.client;
       const client = makeClient("ord-6");
-      return yield* client.QuickCheck({ id: "fast" });
-    }).pipe(
-      Effect.provide(orderHandlers),
-      Effect.provide(TestCluster),
-      Effect.scoped,
-      Effect.runPromise,
-    );
-
-    expect(result).toBe("ok: fast");
-  });
+      const result = yield* client.QuickCheck({ id: "fast" });
+      expect(result).toBe("ok: fast");
+    }).pipe(Effect.provide(orderHandlers), Effect.provide(TestCluster)));
 });

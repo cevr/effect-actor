@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "effect-bun-test";
 import type { Layer } from "effect";
 import { Effect, Schema } from "effect";
 import { TestRunner } from "effect/unstable/cluster";
@@ -32,32 +32,24 @@ const peekableHandlers = PeekableActor.entity.toLayer({
 const TestCluster = TestRunner.layer;
 
 describe("Actor.peek", () => {
-  it("returns Pending when handler has not completed", async () => {
-    // Create a receipt for a message that doesn't exist
-    const receipt = Receipt.makeCastReceipt({
-      actorType: "PeekableActor",
-      entityId: "e-1",
-      operation: "Process",
-      primaryKey: "nonexistent",
-    });
+  it.scopedLive("returns Pending when handler has not completed", () =>
+    Effect.gen(function* () {
+      const receipt = Receipt.makeCastReceipt({
+        actorType: "PeekableActor",
+        entityId: "e-1",
+        operation: "Process",
+        primaryKey: "nonexistent",
+      });
 
-    const result = await Effect.gen(function* () {
-      return yield* Peek.peek(PeekableActor, receipt);
-    }).pipe(
-      Effect.provide(peekableHandlers),
-      Effect.provide(TestCluster),
-      Effect.scoped,
-      Effect.runPromise,
-    );
+      const result = yield* Peek.peek(PeekableActor, receipt);
+      expect(result._tag).toBe("Pending");
+    }).pipe(Effect.provide(peekableHandlers), Effect.provide(TestCluster)),
+  );
 
-    expect(result._tag).toBe("Pending");
-  });
-
-  it("returns Success with decoded value when handler succeeds", async () => {
-    const result = await Effect.gen(function* () {
+  it.scopedLive("returns Success with decoded value when handler succeeds", () =>
+    Effect.gen(function* () {
       const makeClient = yield* PeekableActor.entity.client;
       const client = makeClient("e-2");
-      // Call through real cluster path so reply is stored
       yield* client.Process({ input: "hello" });
 
       const receipt = Receipt.makeCastReceipt({
@@ -67,25 +59,18 @@ describe("Actor.peek", () => {
         primaryKey: "hello",
       });
 
-      return yield* Peek.peek(PeekableActor, receipt);
-    }).pipe(
-      Effect.provide(peekableHandlers),
-      Effect.provide(TestCluster),
-      Effect.scoped,
-      Effect.runPromise,
-    );
+      const result = yield* Peek.peek(PeekableActor, receipt);
+      expect(result._tag).toBe("Success");
+      if (result._tag === "Success") {
+        expect(result.value).toBe("processed: hello");
+      }
+    }).pipe(Effect.provide(peekableHandlers), Effect.provide(TestCluster)),
+  );
 
-    expect(result._tag).toBe("Success");
-    if (result._tag === "Success") {
-      expect(result.value).toBe("processed: hello");
-    }
-  });
-
-  it("returns Failure with decoded error when handler fails", async () => {
-    const result = await Effect.gen(function* () {
+  it.scopedLive("returns Failure with decoded error when handler fails", () =>
+    Effect.gen(function* () {
       const makeClient = yield* PeekableActor.entity.client;
       const client = makeClient("e-3");
-      // Call that will fail — catch the error so we don't throw
       yield* client.Fail({ input: "bad" }).pipe(Effect.option);
 
       const receipt = Receipt.makeCastReceipt({
@@ -95,37 +80,30 @@ describe("Actor.peek", () => {
         primaryKey: "bad",
       });
 
-      return yield* Peek.peek(PeekableActor, receipt);
-    }).pipe(
-      Effect.provide(peekableHandlers),
-      Effect.provide(TestCluster),
-      Effect.scoped,
-      Effect.runPromise,
-    );
+      const result = yield* Peek.peek(PeekableActor, receipt);
+      expect(result._tag).toBe("Failure");
+    }).pipe(Effect.provide(peekableHandlers), Effect.provide(TestCluster)),
+  );
 
-    expect(result._tag).toBe("Failure");
-  });
+  it.scopedLive("dies with NoPrimaryKeyError for operations without primaryKey", () =>
+    Effect.gen(function* () {
+      const NoPkActor = Actor.make("NoPkActor", {
+        Fire: {
+          payload: { x: Schema.Number },
+          success: Schema.Number,
+          persisted: true,
+        },
+      });
 
-  it("dies with NoPrimaryKeyError for operations without primaryKey", async () => {
-    const NoPkActor = Actor.make("NoPkActor", {
-      Fire: {
-        payload: { x: Schema.Number },
-        success: Schema.Number,
-        persisted: true,
-      },
-    });
+      const receipt = Receipt.makeCastReceipt({
+        actorType: "NoPkActor",
+        entityId: "e-1",
+        operation: "Fire",
+        primaryKey: "fake-uuid",
+      });
 
-    const receipt = Receipt.makeCastReceipt({
-      actorType: "NoPkActor",
-      entityId: "e-1",
-      operation: "Fire",
-      primaryKey: "fake-uuid",
-    });
-
-    const exit = await Effect.gen(function* () {
-      return yield* Peek.peek(NoPkActor, receipt);
-    }).pipe(Effect.provide(TestCluster), Effect.scoped, Effect.runPromiseExit);
-
-    expect(exit._tag).toBe("Failure");
-  });
+      const exit = yield* Peek.peek(NoPkActor, receipt).pipe(Effect.exit);
+      expect(exit._tag).toBe("Failure");
+    }).pipe(Effect.provide(TestCluster)),
+  );
 });

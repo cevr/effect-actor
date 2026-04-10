@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, test } from "effect-bun-test";
 import type { Layer } from "effect";
 import { Context, Effect, Schema } from "effect";
 import { ClusterSchema, ShardingConfig } from "effect/unstable/cluster";
@@ -9,6 +9,8 @@ const TestShardingConfig = ShardingConfig.layer({
   entityMailboxCapacity: 10,
   entityTerminationTimeout: 0,
 });
+
+const effectTest = it.scopedLive.layer(TestShardingConfig);
 
 const Counter = Actor.make("Counter", {
   Increment: {
@@ -27,7 +29,7 @@ const handlerLayer = Counter.entity.toLayer({
 }) as unknown as Layer.Layer<never>;
 
 describe("Actor.make", () => {
-  it("defines a multi-operation actor with typed payload/success/error schemas", () => {
+  test("defines a multi-operation actor with typed payload/success/error schemas", () => {
     expect(Counter.name).toBe("Counter");
     expect(Counter._tag).toBe("ActorDefinition");
     expect(Counter.entity).toBeDefined();
@@ -35,11 +37,11 @@ describe("Actor.make", () => {
     expect(Object.keys(Counter.operations)).toEqual(["Increment", "GetCount"]);
   });
 
-  it("compiles operations into Entity under the hood", () => {
+  test("compiles operations into Entity under the hood", () => {
     expect(Counter.entity).toBeDefined();
   });
 
-  it("attaches persisted annotation when persisted: true", () => {
+  test("attaches persisted annotation when persisted: true", () => {
     const Persisted = Actor.make("Persisted", {
       Save: {
         payload: { data: Schema.String },
@@ -52,7 +54,7 @@ describe("Actor.make", () => {
     expect(val).toBe(true);
   });
 
-  it("attaches primaryKey extractor from definition", () => {
+  test("attaches primaryKey extractor from definition", () => {
     const WithPK = Actor.make("WithPK", {
       Op: {
         payload: { id: Schema.String },
@@ -62,18 +64,13 @@ describe("Actor.make", () => {
       },
     });
     expect(WithPK.operations["Op"]!.primaryKey).toBeDefined();
-    // Verify it's wired — calling primaryKey on a payload returns the key
     const pk = WithPK.operations["Op"]!.primaryKey!({ id: "abc" } as never);
     expect(pk).toBe("abc");
   });
 
-  it("operations without explicit persisted: true use cluster default", () => {
-    // Cluster defaults all RPCs to persisted: true. Our DSL only sets the
-    // annotation explicitly when persisted: true is specified.
+  test("operations without explicit persisted: true use cluster default", () => {
     const rpc = Counter.entity.protocol.requests.get("Increment")!;
     const result = Context.getOption(rpc.annotations, ClusterSchema.Persisted);
-    // Cluster sets a default — either present or not, but the operation
-    // config does not have persisted set
     expect(Counter.operations["Increment"]!.persisted).toBeUndefined();
     expect(result._tag).toBe("Some");
   });
@@ -89,21 +86,20 @@ const pingHandlers = Ping.entity.toLayer({
 }) as unknown as Layer.Layer<never>;
 
 describe("Actor.single", () => {
-  it("defines a single-operation actor — no operation namespace on ref", async () => {
-    expect(Ping.name).toBe("Ping");
-    expect(Ping._tag).toBe("SingleActorDefinition");
-    expect(Ping.operationTag).toBe("Ping");
+  effectTest("defines a single-operation actor — no operation namespace on ref", () =>
+    Effect.gen(function* () {
+      expect(Ping.name).toBe("Ping");
+      expect(Ping._tag).toBe("SingleActorDefinition");
+      expect(Ping.operationTag).toBe("Ping");
 
-    const result = await Effect.gen(function* () {
       const makeRef = yield* Testing.testSingleClient(Ping, pingHandlers);
       const ref = yield* makeRef("p-1");
-      return yield* ref.call({ message: "hello" });
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+      const result = yield* ref.call({ message: "hello" });
+      expect(result).toBe("pong: hello");
+    }),
+  );
 
-    expect(result).toBe("pong: hello");
-  });
-
-  it("supports persisted + primaryKey options", () => {
+  test("supports persisted + primaryKey options", () => {
     const PingSave = Actor.single("PingSave", {
       payload: { msg: Schema.String },
       success: Schema.String,
@@ -119,16 +115,14 @@ describe("Actor.single", () => {
 });
 
 describe("Actor.client", () => {
-  it("returns a function (entityId) => Ref with typed operations", async () => {
-    const program = Effect.gen(function* () {
+  effectTest("returns a function (entityId) => Ref with typed operations", () =>
+    Effect.gen(function* () {
       const makeRef = yield* Testing.testClient(Counter, handlerLayer);
       const ref = yield* makeRef("counter-1");
       expect(ref["Increment"]).toBeDefined();
       expect(ref["Increment"]?.call).toBeDefined();
       expect(ref["GetCount"]).toBeDefined();
       expect(ref["GetCount"]?.call).toBeDefined();
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig));
-
-    await Effect.runPromise(program);
-  });
+    }),
+  );
 });

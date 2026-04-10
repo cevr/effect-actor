@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, test } from "effect-bun-test";
 import {
   Defect,
   Failure,
@@ -13,7 +13,7 @@ import {
 } from "../src/receipt.js";
 
 describe("CastReceipt", () => {
-  it("is serializable — roundtrips through JSON", () => {
+  test("is serializable — roundtrips through JSON", () => {
     const receipt = makeCastReceipt({
       actorType: "MyActor",
       entityId: "e-1",
@@ -30,7 +30,7 @@ describe("CastReceipt", () => {
     expect(parsed.primaryKey).toBe("pk-1");
   });
 
-  it("carries actorType, entityId, operation, primaryKey", () => {
+  test("carries actorType, entityId, operation, primaryKey", () => {
     const receipt = makeCastReceipt({
       actorType: "Order",
       entityId: "ord-123",
@@ -45,7 +45,7 @@ describe("CastReceipt", () => {
     expect(receipt.primaryKey).toBe("key-abc");
   });
 
-  it("duplicate primaryKey produces identical receipt fields", () => {
+  test("duplicate primaryKey produces identical receipt fields", () => {
     const r1 = makeCastReceipt({
       actorType: "Order",
       entityId: "ord-1",
@@ -66,12 +66,12 @@ describe("CastReceipt", () => {
 });
 
 describe("PeekResult", () => {
-  it("Pending is the initial state", () => {
+  test("Pending is the initial state", () => {
     expect(isPending(Pending)).toBe(true);
     expect(isTerminal(Pending)).toBe(false);
   });
 
-  it("Success carries decoded value", () => {
+  test("Success carries decoded value", () => {
     const result = Success(42);
     expect(isSuccess(result)).toBe(true);
     expect(result._tag).toBe("Success");
@@ -81,7 +81,7 @@ describe("PeekResult", () => {
     expect(isTerminal(result)).toBe(true);
   });
 
-  it("Failure carries decoded error", () => {
+  test("Failure carries decoded error", () => {
     const result = Failure({ code: "NOT_FOUND" });
     expect(isFailure(result)).toBe(true);
     if (isFailure(result)) {
@@ -90,12 +90,12 @@ describe("PeekResult", () => {
     expect(isTerminal(result)).toBe(true);
   });
 
-  it("Interrupted is terminal", () => {
+  test("Interrupted is terminal", () => {
     expect(Interrupted._tag).toBe("Interrupted");
     expect(isTerminal(Interrupted)).toBe(true);
   });
 
-  it("Defect carries cause", () => {
+  test("Defect carries cause", () => {
     const result = Defect("kaboom");
     expect(result._tag).toBe("Defect");
     if (result._tag === "Defect") {

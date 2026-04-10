@@ -1,6 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "effect-bun-test";
 import type { Layer } from "effect";
-import { Effect, Schema } from "effect";
+import { Effect, Exit, Schema } from "effect";
 import { ShardingConfig } from "effect/unstable/cluster";
 import { Actor, Testing } from "../src/index.js";
 
@@ -9,6 +9,8 @@ const TestShardingConfig = ShardingConfig.layer({
   entityMailboxCapacity: 10,
   entityTerminationTimeout: 0,
 });
+
+const test = it.scopedLive.layer(TestShardingConfig);
 
 const Counter = Actor.make("Counter", {
   Increment: {
@@ -26,99 +28,89 @@ const handlerLayer = Counter.entity.toLayer({
 }) as unknown as Layer.Layer<never>;
 
 describe("Actor.handlers", () => {
-  it("wires plain handler functions — call returns handler result", async () => {
-    const result = await Effect.gen(function* () {
+  test("wires plain handler functions — call returns handler result", () =>
+    Effect.gen(function* () {
       const makeRef = yield* Testing.testClient(Counter, handlerLayer);
       const ref = yield* makeRef("counter-1");
-      return yield* ref["Increment"]!.call({ amount: 5 });
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+      const result = yield* ref["Increment"]!.call({ amount: 5 });
+      expect(result).toBe(6);
+    }));
 
-    expect(result).toBe(6);
-  });
-
-  it("handler return value becomes the RPC reply — no explicit .reply()", async () => {
-    const result = await Effect.gen(function* () {
+  test("handler return value becomes the RPC reply — no explicit .reply()", () =>
+    Effect.gen(function* () {
       const makeRef = yield* Testing.testClient(Counter, handlerLayer);
       const ref = yield* makeRef("counter-1");
-      return yield* ref["GetCount"]!.call();
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+      const result = yield* ref["GetCount"]!.call();
+      expect(result).toBe("hello");
+    }));
 
-    expect(result).toBe("hello");
-  });
+  test("supports Effect.succeed for handlers that need deferred construction", () =>
+    Effect.gen(function* () {
+      const GenActor = Actor.make("GenActor", {
+        Compute: {
+          payload: { x: Schema.Number },
+          success: Schema.Number,
+        },
+      });
 
-  it("supports Effect.gen for handlers that need services", async () => {
-    const GenActor = Actor.make("GenActor", {
-      Compute: {
-        payload: { x: Schema.Number },
-        success: Schema.Number,
-      },
-    });
+      const genHandlers = GenActor.entity.toLayer(
+        Effect.succeed({
+          Compute: (req) => Effect.succeed(req.payload.x * 10),
+        } as const),
+      ) as unknown as Layer.Layer<never>;
 
-    const genHandlers = GenActor.entity.toLayer(
-      Effect.succeed({
-        Compute: (req) => Effect.succeed(req.payload.x * 10),
-      } as const),
-    ) as unknown as Layer.Layer<never>;
-
-    const result = await Effect.gen(function* () {
       const makeRef = yield* Testing.testClient(GenActor, genHandlers);
       const ref = yield* makeRef("gen-1");
-      return yield* ref["Compute"]!.call({ x: 7 });
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+      const result = yield* ref["Compute"]!.call({ x: 7 });
+      expect(result).toBe(70);
+    }));
 
-    expect(result).toBe(70);
-  });
+  test("handler errors become RPC errors", () =>
+    Effect.gen(function* () {
+      class HandlerError extends Schema.TaggedErrorClass<HandlerError>()("HandlerError", {
+        reason: Schema.String,
+      }) {}
 
-  it("handler errors become RPC errors", async () => {
-    class HandlerError extends Schema.TaggedErrorClass<HandlerError>()("HandlerError", {
-      reason: Schema.String,
-    }) {}
+      const ErrActor = Actor.make("ErrActor", {
+        Fail: {
+          payload: { input: Schema.String },
+          success: Schema.Void,
+          error: HandlerError,
+        },
+      });
 
-    const ErrActor = Actor.make("ErrActor", {
-      Fail: {
-        payload: { input: Schema.String },
-        success: Schema.Void,
-        error: HandlerError,
-      },
-    });
+      const errHandlers = ErrActor.entity.toLayer({
+        Fail: (_req) => Effect.fail(new HandlerError({ reason: "bad" })),
+      }) as unknown as Layer.Layer<never>;
 
-    const errHandlers = ErrActor.entity.toLayer({
-      Fail: (_req) => Effect.fail(new HandlerError({ reason: "bad" })),
-    }) as unknown as Layer.Layer<never>;
-
-    const exit = await Effect.gen(function* () {
       const makeRef = yield* Testing.testClient(ErrActor, errHandlers);
       const ref = yield* makeRef("err-1");
-      return yield* ref["Fail"]!.call({ input: "test" });
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromiseExit);
+      const exit = yield* ref["Fail"]!.call({ input: "test" }).pipe(Effect.exit);
+      expect(Exit.isFailure(exit)).toBe(true);
+    }));
 
-    expect(exit._tag).toBe("Failure");
-  });
+  test("handler receives request with payload", () =>
+    Effect.gen(function* () {
+      let receivedPayload: unknown = null;
 
-  it("handler receives request with payload", async () => {
-    let receivedPayload: unknown = null;
+      const InspectActor = Actor.make("InspectActor", {
+        Inspect: {
+          payload: { value: Schema.String },
+          success: Schema.String,
+        },
+      });
 
-    const InspectActor = Actor.make("InspectActor", {
-      Inspect: {
-        payload: { value: Schema.String },
-        success: Schema.String,
-      },
-    });
+      const inspectHandlers = InspectActor.entity.toLayer({
+        Inspect: (req) => {
+          receivedPayload = req.payload;
+          return Effect.succeed(`got: ${req.payload.value}`);
+        },
+      }) as unknown as Layer.Layer<never>;
 
-    const inspectHandlers = InspectActor.entity.toLayer({
-      Inspect: (req) => {
-        receivedPayload = req.payload;
-        return Effect.succeed(`got: ${req.payload.value}`);
-      },
-    }) as unknown as Layer.Layer<never>;
-
-    const result = await Effect.gen(function* () {
       const makeRef = yield* Testing.testClient(InspectActor, inspectHandlers);
       const ref = yield* makeRef("inspect-1");
-      return yield* ref["Inspect"]!.call({ value: "hello" });
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
-
-    expect(result).toBe("got: hello");
-    expect(receivedPayload).toEqual({ value: "hello" });
-  });
+      const result = yield* ref["Inspect"]!.call({ value: "hello" });
+      expect(result).toBe("got: hello");
+      expect(receivedPayload).toEqual({ value: "hello" });
+    }));
 });

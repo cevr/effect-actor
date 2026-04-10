@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "effect-bun-test";
 import type { Layer } from "effect";
 import { Effect, Schema } from "effect";
 import { ShardingConfig } from "effect/unstable/cluster";
@@ -9,6 +9,8 @@ const TestShardingConfig = ShardingConfig.layer({
   entityMailboxCapacity: 10,
   entityTerminationTimeout: 0,
 });
+
+const test = it.scopedLive.layer(TestShardingConfig);
 
 const Echo = Actor.make("Echo", {
   Say: {
@@ -29,54 +31,46 @@ const echoHandlers = Echo.entity.toLayer({
 }) as unknown as Layer.Layer<never>;
 
 describe("Actor.testClient", () => {
-  it("creates a test client via Entity.makeTestClient", async () => {
-    const makeRef = await Effect.gen(function* () {
-      return yield* Testing.testClient(Echo, echoHandlers);
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+  test("creates a test client via Entity.makeTestClient", () =>
+    Effect.gen(function* () {
+      const makeRef = yield* Testing.testClient(Echo, echoHandlers);
+      expect(typeof makeRef).toBe("function");
+    }));
 
-    expect(typeof makeRef).toBe("function");
-  });
-
-  it("call works end-to-end without cluster infrastructure", async () => {
-    const result = await Effect.gen(function* () {
+  test("call works end-to-end without cluster infrastructure", () =>
+    Effect.gen(function* () {
       const makeRef = yield* Testing.testClient(Echo, echoHandlers);
       const ref = yield* makeRef("test-1");
-      return yield* ref["Say"]!.call({ msg: "hello" });
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+      const result = yield* ref["Say"]!.call({ msg: "hello" });
+      expect(result).toBe("echo: hello");
+    }));
 
-    expect(result).toBe("echo: hello");
-  });
-
-  it("cast returns CastReceipt in test mode", async () => {
-    const receipt = await Effect.gen(function* () {
+  test("cast returns CastReceipt in test mode", () =>
+    Effect.gen(function* () {
       const makeRef = yield* Testing.testClient(Echo, echoHandlers);
       const ref = yield* makeRef("test-2");
-      return yield* ref["Fire"]!.cast({ x: 7 });
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
+      const receipt = yield* ref["Fire"]!.cast({ x: 7 });
+      expect(receipt._tag).toBe("CastReceipt");
+      expect(receipt.actorType).toBe("Echo");
+      expect(receipt.entityId).toBe("test-2");
+      expect(receipt.operation).toBe("Fire");
+      expect(receipt.primaryKey).toBe("7");
+    }));
 
-    expect(receipt._tag).toBe("CastReceipt");
-    expect(receipt.actorType).toBe("Echo");
-    expect(receipt.entityId).toBe("test-2");
-    expect(receipt.operation).toBe("Fire");
-    expect(receipt.primaryKey).toBe("7");
-  });
+  test("testSingleClient works for single-op actors", () =>
+    Effect.gen(function* () {
+      const SingleEcho = Actor.single("SingleEcho", {
+        payload: { msg: Schema.String },
+        success: Schema.String,
+      });
 
-  it("testSingleClient works for single-op actors", async () => {
-    const SingleEcho = Actor.single("SingleEcho", {
-      payload: { msg: Schema.String },
-      success: Schema.String,
-    });
+      const singleHandlers = SingleEcho.entity.toLayer({
+        SingleEcho: (req) => Effect.succeed(`single: ${req.payload.msg}`),
+      }) as unknown as Layer.Layer<never>;
 
-    const singleHandlers = SingleEcho.entity.toLayer({
-      SingleEcho: (req) => Effect.succeed(`single: ${req.payload.msg}`),
-    }) as unknown as Layer.Layer<never>;
-
-    const result = await Effect.gen(function* () {
       const makeRef = yield* Testing.testSingleClient(SingleEcho, singleHandlers);
       const ref = yield* makeRef("s-1");
-      return yield* ref.call({ msg: "hi" });
-    }).pipe(Effect.scoped, Effect.provide(TestShardingConfig), Effect.runPromise);
-
-    expect(result).toBe("single: hi");
-  });
+      const result = yield* ref.call({ msg: "hi" });
+      expect(result).toBe("single: hi");
+    }));
 });
