@@ -1,6 +1,5 @@
 import { describe, expect, it, test } from "effect-bun-test";
-import type { Layer } from "effect";
-import { Context, DateTime, Effect, PrimaryKey, Schema } from "effect";
+import { Context, DateTime, Effect, Layer, PrimaryKey, Schema } from "effect";
 import { ClusterSchema, ShardingConfig } from "effect/unstable/cluster";
 import * as DeliverAt from "effect/unstable/cluster/DeliverAt";
 import { Actor } from "../src/index.js";
@@ -10,8 +9,6 @@ const TestShardingConfig = ShardingConfig.layer({
   entityMailboxCapacity: 10,
   entityTerminationTimeout: 0,
 });
-
-const effectTest = it.scopedLive.layer(TestShardingConfig);
 
 const Counter = Actor.make("Counter", {
   Increment: {
@@ -23,10 +20,15 @@ const Counter = Actor.make("Counter", {
   },
 });
 
-const handlerLayer = Actor.toLayer(Counter, {
-  Increment: ({ operation }) => Effect.succeed(operation.amount + 1),
-  GetCount: () => Effect.succeed(42),
-});
+const CounterTest = Layer.provide(
+  Actor.toTestLayer(Counter, {
+    Increment: ({ operation }) => Effect.succeed(operation.amount + 1),
+    GetCount: () => Effect.succeed(42),
+  }),
+  TestShardingConfig,
+);
+
+const effectTest = it.scopedLive.layer(CounterTest);
 
 describe("Actor.make", () => {
   test("defines a multi-operation actor with typed input/output/error schemas", () => {
@@ -97,13 +99,20 @@ describe("Actor.make", () => {
       } as never),
     ).toThrow(/collides with reserved/);
   });
+
+  test("throws on reserved operation name 'actor'", () => {
+    expect(() =>
+      Actor.make("Bad", {
+        actor: { output: Schema.String },
+      } as never),
+    ).toThrow(/collides with reserved/);
+  });
 });
 
-describe("Actor.Test", () => {
-  effectTest("returns a function (entityId) => ActorRef with call/cast", () =>
+describe("Actor.toTestLayer", () => {
+  effectTest("actor(id) returns ActorRef with call/cast", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(Counter, handlerLayer as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("counter-1");
+      const ref = yield* Counter.actor("counter-1");
       expect(ref.call).toBeDefined();
       expect(ref.cast).toBeDefined();
     }),
@@ -111,8 +120,7 @@ describe("Actor.Test", () => {
 
   effectTest("call dispatches by operation value", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(Counter, handlerLayer as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("counter-2");
+      const ref = yield* Counter.actor("counter-2");
       const result = yield* ref.call(Counter.Increment({ amount: 5 }));
       expect(result).toBe(6);
     }),
@@ -120,8 +128,7 @@ describe("Actor.Test", () => {
 
   effectTest("call works for zero-input operations", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(Counter, handlerLayer as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("counter-3");
+      const ref = yield* Counter.actor("counter-3");
       const result = yield* ref.call(Counter.GetCount());
       expect(result).toBe(42);
     }),

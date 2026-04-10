@@ -1,6 +1,5 @@
 import { describe, expect, it } from "effect-bun-test";
-import type { Layer } from "effect";
-import { Effect, Exit, Schema, Stream } from "effect";
+import { Effect, Exit, Layer, Schema, Stream } from "effect";
 import { ShardingConfig, TestRunner } from "effect/unstable/cluster";
 import { Actor, makeCastReceipt, watch } from "../src/index.js";
 
@@ -9,8 +8,6 @@ const TestShardingConfig = ShardingConfig.layer({
   entityMailboxCapacity: 10,
   entityTerminationTimeout: 0,
 });
-
-const test = it.scopedLive.layer(TestShardingConfig);
 
 class ValidationError extends Schema.TaggedErrorClass<ValidationError>()("ValidationError", {
   message: Schema.String,
@@ -24,68 +21,64 @@ const Validator = Actor.make("Validator", {
   },
 });
 
-const validatorHandlers = Actor.toLayer(Validator, {
-  Validate: ({ operation }) =>
-    operation.input === "bad"
-      ? Effect.fail(new ValidationError({ message: "invalid input" }))
-      : Effect.succeed(`validated: ${operation.input}`),
-});
+const ValidatorTest = Layer.provide(
+  Actor.toTestLayer(Validator, {
+    Validate: ({ operation }) =>
+      operation.input === "bad"
+        ? Effect.fail(new ValidationError({ message: "invalid input" }))
+        : Effect.succeed(`validated: ${operation.input}`),
+  }),
+  TestShardingConfig,
+);
+
+const test = it.scopedLive.layer(ValidatorTest);
 
 describe("Ref.call", () => {
   test("sends message and awaits handler completion — returns success value", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(
-        Validator,
-        validatorHandlers as unknown as Layer.Layer<never>,
-      );
-      const ref = yield* makeRef("v-1");
+      const ref = yield* Validator.actor("v-1");
       const result = yield* ref.call(Validator.Validate({ input: "good" }));
       expect(result).toBe("validated: good");
     }));
 
   test("surfaces handler errors in the error channel", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(
-        Validator,
-        validatorHandlers as unknown as Layer.Layer<never>,
-      );
-      const ref = yield* makeRef("v-1");
+      const ref = yield* Validator.actor("v-1");
       const exit = yield* ref.call(Validator.Validate({ input: "bad" })).pipe(Effect.exit);
       expect(Exit.isFailure(exit)).toBe(true);
     }));
 
-  test("surfaces handler defects as defects", () =>
-    Effect.gen(function* () {
-      const BoomActor = Actor.make("Boom", {
-        Explode: {},
-      });
-      const boomHandlers = Actor.toLayer(BoomActor, {
+  it.scopedLive.layer(
+    Layer.provide(
+      Actor.toTestLayer(Actor.make("Boom", { Explode: {} }), {
         Explode: () => Effect.die("kaboom"),
-      });
-
-      const makeRef = yield* Actor.Test(BoomActor, boomHandlers as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("b-1");
+      }),
+      TestShardingConfig,
+    ),
+  )("surfaces handler defects as defects", () =>
+    Effect.gen(function* () {
+      const BoomActor = Actor.make("Boom", { Explode: {} });
+      const ref = yield* BoomActor.actor("b-1");
       const exit = yield* ref.call(BoomActor.Explode()).pipe(Effect.exit);
       expect(Exit.isFailure(exit)).toBe(true);
-    }));
+    }),
+  );
 
-  test("works without MessageStorage (non-persisted path)", () =>
-    Effect.gen(function* () {
-      const VolatileActor = Actor.make("Volatile", {
-        Ping: { output: Schema.String },
-      });
-      const volatileHandlers = Actor.toLayer(VolatileActor, {
+  it.scopedLive.layer(
+    Layer.provide(
+      Actor.toTestLayer(Actor.make("Volatile", { Ping: { output: Schema.String } }), {
         Ping: () => Effect.succeed("pong"),
-      });
-
-      const makeRef = yield* Actor.Test(
-        VolatileActor,
-        volatileHandlers as unknown as Layer.Layer<never>,
-      );
-      const ref = yield* makeRef("vol-1");
+      }),
+      TestShardingConfig,
+    ),
+  )("works without MessageStorage (non-persisted path)", () =>
+    Effect.gen(function* () {
+      const VolatileActor = Actor.make("Volatile", { Ping: { output: Schema.String } });
+      const ref = yield* VolatileActor.actor("vol-1");
       const result = yield* ref.call(VolatileActor.Ping());
       expect(result).toBe("pong");
-    }));
+    }),
+  );
 });
 
 const CastActor = Actor.make("CastActor", {
@@ -97,63 +90,71 @@ const CastActor = Actor.make("CastActor", {
   },
 });
 
-const castHandlers = Actor.toLayer(CastActor, {
-  Process: ({ operation }) => Effect.succeed(`processed: ${operation.input}`),
-});
+const CastActorTest = Layer.provide(
+  Actor.toTestLayer(CastActor, {
+    Process: ({ operation }) => Effect.succeed(`processed: ${operation.input}`),
+  }),
+  TestShardingConfig,
+);
+
+const castTest = it.scopedLive.layer(CastActorTest);
 
 describe("Ref.cast", () => {
-  test("sends persisted message with discard: true — returns CastReceipt immediately", () =>
+  castTest("sends persisted message with discard: true — returns CastReceipt immediately", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(CastActor, castHandlers as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("c-1");
+      const ref = yield* CastActor.actor("c-1");
       const receipt = yield* ref.cast(CastActor.Process({ input: "data" }));
       expect(receipt._tag).toBe("CastReceipt");
-    }));
+    }),
+  );
 
-  test("receipt contains actorType, entityId, operation, primaryKey", () =>
+  castTest("receipt contains actorType, entityId, operation, primaryKey", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(CastActor, castHandlers as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("c-2");
+      const ref = yield* CastActor.actor("c-2");
       const receipt = yield* ref.cast(CastActor.Process({ input: "mykey" }));
       expect(receipt.actorType).toBe("CastActor");
       expect(receipt.entityId).toBe("c-2");
       expect(receipt.operation).toBe("Process");
       expect(receipt.primaryKey).toBe("mykey");
-    }));
+    }),
+  );
 
-  test("cast without primaryKey returns receipt with no primaryKey", () =>
+  it.scopedLive.layer(
+    Layer.provide(
+      Actor.toTestLayer(
+        Actor.make("Simple", {
+          Do: { payload: { x: Schema.Number }, success: Schema.Number, persisted: true },
+        }),
+        { Do: ({ operation }: { operation: { x: number } }) => Effect.succeed(operation.x * 2) },
+      ),
+      TestShardingConfig,
+    ),
+  )("cast without primaryKey returns receipt with no primaryKey", () =>
     Effect.gen(function* () {
       const SimpleActor = Actor.make("Simple", {
-        Do: {
-          payload: { x: Schema.Number },
-          success: Schema.Number,
-          persisted: true,
-        },
+        Do: { payload: { x: Schema.Number }, success: Schema.Number, persisted: true },
       });
-      const simpleHandlers = Actor.toLayer(SimpleActor, {
-        Do: ({ operation }) => Effect.succeed(operation.x * 2),
-      });
-
-      const makeRef = yield* Actor.Test(
-        SimpleActor,
-        simpleHandlers as unknown as Layer.Layer<never>,
-      );
-      const ref = yield* makeRef("s-1");
+      const ref = yield* SimpleActor.actor("s-1");
       const receipt = yield* ref.cast(SimpleActor.Do({ x: 5 }));
       expect(receipt.primaryKey).toBeUndefined();
-    }));
+    }),
+  );
 
-  test("cast still returns CastReceipt even without cluster persistence", () =>
+  castTest("cast still returns CastReceipt even without cluster persistence", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(CastActor, castHandlers as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("c-persist-1");
+      const ref = yield* CastActor.actor("c-persist-1");
       const receipt = yield* ref.cast(CastActor.Process({ input: "test" }));
       expect(receipt._tag).toBe("CastReceipt");
       expect(receipt.primaryKey).toBe("test");
-    }));
+    }),
+  );
 });
 
 describe("Ref.watch", () => {
+  const castHandlerLayer = Actor.toLayer(CastActor, {
+    Process: ({ operation }) => Effect.succeed(`processed: ${operation.input}`),
+  });
+
   it.scopedLive("emits Pending then Success when handler completes, then completes stream", () =>
     Effect.gen(function* () {
       const makeClient = yield* CastActor._meta.entity.client;
@@ -180,7 +181,7 @@ describe("Ref.watch", () => {
         expect(last.value).toBe("processed: watch-test");
       }
     }).pipe(
-      Effect.provide(castHandlers as unknown as Layer.Layer<never>),
+      Effect.provide(castHandlerLayer as unknown as Layer.Layer<never>),
       Effect.provide(TestRunner.layer),
     ),
   );

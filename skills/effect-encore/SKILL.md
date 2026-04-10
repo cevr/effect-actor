@@ -12,7 +12,7 @@ Thin protocol layer over `@effect/cluster` providing Erlang gen_server semantics
 ```
 What are you working on?
 ├─ Defining an actor              → §Define
-├─ Wiring handlers                → §Handle
+├─ Wiring handlers / layers       → §Handle
 ├─ Calling / casting              → §Client
 ├─ Checking results (peek/watch)  → §Peek
 ├─ Testing                        → §Test
@@ -25,8 +25,9 @@ What are you working on?
 
 ## Core Concepts
 
-- **Delivery mode is the caller's choice.** Every operation supports `call`, `cast`, and `watch`. The definition doesn't decide — the caller does.
-- **Identity is separate from the message.** Get a ref to an entity, then send messages through it.
+- **Delivery mode is the caller's choice.** Every operation supports `call` and `cast`. The definition doesn't decide — the caller does.
+- **Value dispatch.** Construct an operation value, pass it to `ref.call(op)` or `ref.cast(op)`.
+- **One layer, two roles.** `Actor.toLayer(actor, handlers)` = consumer + producer. `Actor.toLayer(actor)` = producer only.
 - **Compiles to @effect/cluster.** Not a new runtime. `Actor.make` produces an `Entity` under the hood.
 
 ## Define
@@ -43,21 +44,13 @@ const Counter = Actor.make("Counter", {
     success: Schema.Number,
   },
 });
+
+// Constructors are on the object directly
+Counter.Increment({ amount: 5 }); // → OperationValue
+Counter.GetCount(); // zero-input, still callable
 ```
 
-### Single-operation actor
-
-No operation namespace on the ref — `ref.call()` instead of `ref.Op.call()`.
-
-```ts
-const VectorUpdate = Actor.single("VectorUpdate", {
-  payload: { locationId: Schema.String },
-  persisted: true,
-  primaryKey: (p) => p.locationId,
-});
-```
-
-### OperationConfig fields
+### OperationDef fields
 
 | Field        | Type                                 | Default         | Description                             |
 | ------------ | ------------------------------------ | --------------- | --------------------------------------- |
@@ -67,6 +60,22 @@ const VectorUpdate = Actor.single("VectorUpdate", {
 | `persisted`  | `boolean`                            | cluster default | Persist to MessageStorage               |
 | `primaryKey` | `(payload) => string`                | none            | Deduplication key extractor             |
 | `deliverAt`  | `(payload) => DateTime`              | none            | Delayed delivery extractor              |
+
+### ActorObject properties
+
+| Property                    | Type        | Description                               |
+| --------------------------- | ----------- | ----------------------------------------- |
+| `Counter.Increment(...)`    | Constructor | Returns `OperationValue`                  |
+| `Counter._meta.name`        | `"Counter"` | Actor name (literal type)                 |
+| `Counter._meta.entity`      | `Entity`    | Underlying cluster Entity                 |
+| `Counter._meta.definitions` | Record      | Raw operation definitions                 |
+| `Counter.Context`           | Context tag | DI tag for client factory                 |
+| `Counter.actor(id)`         | Method      | `yield* Counter.actor("id")` → `ActorRef` |
+| `Counter.$is(tag)`          | Type guard  | `Counter.$is("Increment")(value)`         |
+
+### Reserved operation names
+
+`_tag`, `_meta`, `$is`, `Context`, `actor` — these collide with ActorObject properties. Compile-time type guard + runtime check.
 
 ### Pre-built Schema.Class payload
 
@@ -93,7 +102,7 @@ const MyActor = Actor.make("MyActor", {
 ### Escape hatch: raw Rpcs
 
 ```ts
-const MyActor = Actor.from("MyActor", [
+const MyActor = fromRpcs("MyActor", [
   Rpc.make("Op1", { ... }),
   Rpc.make("Op2", { ... }),
 ]);
@@ -101,30 +110,42 @@ const MyActor = Actor.from("MyActor", [
 
 ## Handle
 
+### Actor.toLayer — consumer + producer
+
+Registers entity handlers AND provides the actor's `Context` tag (client factory).
+
 ```ts
 // Plain object
-const layer = Handlers.handlers(Counter, {
-  Increment: (req) => Effect.succeed(req.payload.amount + 1),
+const CounterLive = Actor.toLayer(Counter, {
+  Increment: ({ operation }) => Effect.succeed(operation.amount + 1),
   GetCount: () => Effect.succeed(42),
 });
 
 // From Effect context (yield services)
-const layer = Handlers.handlers(
+const CounterLive = Actor.toLayer(
   Counter,
   Effect.gen(function* () {
     const db = yield* Database;
     return {
-      Increment: (req) => db.increment(req.payload.amount),
+      Increment: ({ operation }) => db.increment(operation.amount),
       GetCount: () => db.getCount(),
     };
   }),
 );
 ```
 
+### Actor.toLayer — producer only
+
+For services that send messages to actors they don't handle (remote entities):
+
+```ts
+const CounterClient = Actor.toLayer(Counter);
+```
+
 ### HandlerOptions
 
 ```ts
-Handlers.handlers(actor, build, {
+Actor.toLayer(actor, handlers, {
   spanAttributes: { team: "platform" },
   maxIdleTime: 60_000,
   concurrency: 10,
@@ -132,23 +153,40 @@ Handlers.handlers(actor, build, {
 });
 ```
 
+### Handler shape
+
+Handlers receive `{ operation, request }`:
+
+- `operation` — typed operation value with `_tag` and payload fields spread
+- `request` — cluster request metadata (headers, requestId, etc.)
+
 ## Client
 
+### actor(id) — get a ref
+
 ```ts
-// Get a ref factory (requires Sharding in context)
-const makeRef = yield * Actor.client(Counter);
-const ref = makeRef("counter-1");
-
-// call — synchronous, block for reply
-const result = yield * ref.Increment.call({ amount: 5 });
-
-// cast — fire-and-forget, returns CastReceipt
-const receipt = yield * ref.Increment.cast({ amount: 5 });
+const ref = yield * Counter.actor("counter-1");
 ```
 
-### CastReceipt
+Requires `Counter.Context` in the environment (provided by `Actor.toLayer` or `Actor.toTestLayer`).
 
-Carries the full compound key needed for peek/watch:
+### call — block for reply
+
+```ts
+const result = yield * ref.call(Counter.Increment({ amount: 5 }));
+```
+
+Return type is inferred from the operation's `success` schema. Error type from `error` schema.
+
+### cast — fire-and-forget
+
+```ts
+const receipt = yield * ref.cast(Counter.Increment({ amount: 5 }));
+```
+
+Returns `CastReceipt` immediately. Cast error channel does NOT include handler errors (discard semantics).
+
+### CastReceipt
 
 ```ts
 type CastReceipt = {
@@ -156,7 +194,7 @@ type CastReceipt = {
   actorType: string;
   entityId: string;
   operation: string;
-  primaryKey: string;
+  primaryKey?: string;
 };
 ```
 
@@ -165,7 +203,7 @@ type CastReceipt = {
 One-shot status check via CastReceipt. Requires `MessageStorage | Sharding` in context.
 
 ```ts
-const status = yield * Peek.peek(Counter, receipt);
+const status = yield * peek(Counter, receipt);
 // Returns: Pending | Success | Failure | Interrupted | Defect
 ```
 
@@ -174,17 +212,98 @@ const status = yield * Peek.peek(Counter, receipt);
 Polling stream that emits on status changes and completes on terminal result.
 
 ```ts
-const stream = Peek.watch(Counter, receipt, { interval: Duration.millis(200) });
+const stream = watch(Counter, receipt, { interval: Duration.millis(200) });
 ```
 
 ### Gotchas
 
-- `peek` requires a real `primaryKey` on the operation. Cast without `primaryKey` works (fire-and-forget) but the receipt is NOT peekable.
-- `peek` uses `actor.name` (not `receipt.actorType`) for the EntityAddress lookup.
+- `peek` requires a real `primaryKey` on the operation. Cast without `primaryKey` works but the receipt is NOT peekable.
+- `peek` uses `actor._meta.name` (not `receipt.actorType`) for EntityAddress lookup.
+
+## Test
+
+### Actor.toTestLayer — layer-based testing
+
+Returns a `Layer` that provides the actor's `Context` tag via `Entity.makeTestClient` — no cluster infrastructure needed.
+
+```ts
+const CounterTest = Layer.provide(
+  Actor.toTestLayer(Counter, {
+    Increment: ({ operation }) => Effect.succeed(operation.amount + 1),
+    GetCount: () => Effect.succeed(42),
+  }),
+  TestShardingConfig,
+);
+
+const test = it.scopedLive.layer(CounterTest);
+
+test("increments", () =>
+  Effect.gen(function* () {
+    const ref = yield* Counter.actor("counter-1");
+    const result = yield* ref.call(Counter.Increment({ amount: 5 }));
+    expect(result).toBe(6);
+  }));
+```
+
+### Dynamic / inline test layers
+
+When you need to create actors or capture refs inside a test body, provide the layer around the **full usage** — don't let `ActorRef` escape the provider scope:
+
+```ts
+it.scopedLive("dynamic test", () =>
+  Effect.gen(function* () {
+    const calls = yield* Ref.make<Array<string>>([]);
+
+    const Tracker = Actor.make("Tracker", {
+      Track: { payload: { item: Schema.String }, success: Schema.String },
+    });
+
+    const TrackerTest = Layer.provide(
+      Actor.toTestLayer(Tracker, {
+        Track: ({ operation }) =>
+          Ref.update(calls, (arr) => [...arr, operation.item]).pipe(
+            Effect.as(`tracked: ${operation.item}`),
+          ),
+      }),
+      TestShardingConfig,
+    );
+
+    // Provide around the FULL usage, not just actor()
+    return yield* Effect.gen(function* () {
+      const ref = yield* Tracker.actor("t-1");
+      const result = yield* ref.call(Tracker.Track({ item: "widget" }));
+      expect(result).toBe("tracked: widget");
+    }).pipe(Effect.provide(TrackerTest));
+  }),
+);
+```
+
+### Scope gotcha
+
+`Effect.provide(effect, scopedLayer)` creates a private scope that closes when `effect` completes. `Actor.toTestLayer` is scoped (uses `Entity.makeTestClient` which needs `Scope`). If you `Effect.provide` it around only `actor("id")`, the ref escapes the scope and points at dead resources → "All fibers interrupted without error".
+
+**Fix**: provide around the entire block that uses the ref, or use `Layer.buildWithScope` to pin to the test's ambient scope.
+
+### Full cluster integration test
+
+For tests needing `Sharding`, `MessageStorage`, etc., use `TestRunner.layer`:
+
+```ts
+const orderHandlers = Actor.toLayer(Order, { ... });
+
+it.scopedLive("round-trip", () =>
+  Effect.gen(function* () {
+    const makeClient = yield* Order._meta.entity.client;
+    const client = makeClient("ord-1");
+    const result = yield* client.Place({ item: "widget", qty: 3 });
+  }).pipe(
+    Effect.provide(orderHandlers),
+    Effect.provide(TestRunner.layer),
+  ),
+);
+```
 
 ## DeliverAt
-
-Add delayed delivery to any operation:
 
 ```ts
 const Scheduled = Actor.make("Scheduled", {
@@ -201,67 +320,44 @@ The `deliverAt` field must be in the payload schema — the extractor reads it f
 
 `deliverAt` without `primaryKey` is valid (delayed but not deduped).
 
-## Test
-
-```ts
-// Handler isolation — no cluster infrastructure needed
-const makeRef = yield * Testing.testClient(Counter, handlerLayer);
-const ref = yield * makeRef("counter-1");
-const result = yield * ref.Increment.call({ amount: 5 });
-
-// Full cluster integration — use TestRunner.layer
-const status = yield * Peek.peek(Counter, receipt);
-```
-
-`testClient` preserves handler layer error and requirement types — services in handler layers flow through correctly.
-
-For integration tests with `TestRunner.layer`, use `TestClock.adjust(1)` before sending messages to trigger shard assignment.
-
 ## Workflow
 
 Re-exports from `effect/unstable/workflow`:
 
 ```ts
 import { Workflow } from "effect-encore";
-
 const { DurableDeferred, Activity } = Workflow;
 ```
-
-`WorkflowRef` provides `call`, `cast`, `interrupt`, `resume`.
-`workflowPoll` returns `Pending | Success | Failure | Suspended`.
 
 ## Observability
 
 Cluster already creates spans `EntityType(entityId).RpcTag` automatically. No custom middleware needed.
 
-Pass extra attributes via `HandlerOptions.spanAttributes`. Access current entity address via `Entity.CurrentAddress` (re-exported from `Observability.CurrentAddress`).
+Pass extra attributes via `HandlerOptions.spanAttributes`. Access current entity address via `Observability.CurrentAddress`.
 
 ## v3
 
 Import from `effect-encore/v3`. Same API, different import paths:
 
-| v4                          | v3                                |
-| --------------------------- | --------------------------------- |
-| `effect/unstable/cluster`   | `@effect/cluster`                 |
-| `effect/unstable/rpc`       | `@effect/rpc`                     |
-| `effect/unstable/workflow`  | `@effect/workflow`                |
-| `Schema.Top`                | `Schema.Schema.Any`               |
-| `Duration.Input`            | `Duration.DurationInput`          |
-| `Stream.fromEffectSchedule` | `Stream.repeatEffectWithSchedule` |
-
-v3 `CauseEncoded` is a recursive tree (not flat array like v4) — `peek.ts` has a tree walker for this.
+| v4                         | v3                   |
+| -------------------------- | -------------------- |
+| `effect/unstable/cluster`  | `@effect/cluster`    |
+| `effect/unstable/rpc`      | `@effect/rpc`        |
+| `effect/unstable/workflow` | `@effect/workflow`   |
+| `Schema.Top`               | `Schema.Schema.Any`  |
+| `Context.Service`          | `Context.GenericTag` |
 
 ## Migration
 
 ### From raw @effect/cluster
 
-| Before (raw cluster)                                                | After (effect-encore)                                  |
-| ------------------------------------------------------------------- | ------------------------------------------------------ |
-| Custom `Schema.Class` with `PrimaryKey.symbol` + `DeliverAt.symbol` | `primaryKey` + `deliverAt` in OperationConfig          |
-| `Rpc.make` + `RpcGroup.make` + `Entity.fromRpcGroup`                | `Actor.make(name, operations)`                         |
-| `entity.toLayer(Effect.gen(...))` with `entity.of({...})`           | `Handlers.handlers(actor, {...})`                      |
-| `Context.Tag` + `makeClientLayer` per entity                        | `Actor.client(def)` — no extra tags                    |
-| `client(entityId).Op(payload, { discard: true })`                   | `ref.Op.cast(payload)` — returns `CastReceipt`         |
-| Manual `getMessageStatus(primaryKey)` with empty address fields     | `Peek.peek(actor, receipt)` with correct compound key  |
-| Custom `RpcMiddleware` for spans                                    | Not needed — cluster creates spans automatically       |
-| `Entity.makeTestClient` + manual RpcClient mapping                  | `Testing.testClient(actor, layer)` — returns typed Ref |
+| Before (raw cluster)                                                | After (effect-encore)                                      |
+| ------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Custom `Schema.Class` with `PrimaryKey.symbol` + `DeliverAt.symbol` | `primaryKey` + `deliverAt` in OperationDef                 |
+| `Rpc.make` + `RpcGroup.make` + `Entity.fromRpcGroup`                | `Actor.make(name, operations)`                             |
+| `entity.toLayer(Effect.gen(...))` with `entity.of({...})`           | `Actor.toLayer(actor, handlers)`                           |
+| `Context.Tag` + `makeClientLayer` per entity                        | `Actor.toLayer(actor)` — provides `actor.Context`          |
+| `client(entityId).Op(payload, { discard: true })`                   | `ref.cast(Actor.Op(payload))` — returns `CastReceipt`      |
+| Manual `getMessageStatus(primaryKey)` with empty address fields     | `peek(actor, receipt)` with correct compound key           |
+| Custom `RpcMiddleware` for spans                                    | Not needed — cluster creates spans automatically           |
+| `Entity.makeTestClient` + manual RpcClient mapping                  | `Actor.toTestLayer(actor, handlers)` — returns typed Layer |

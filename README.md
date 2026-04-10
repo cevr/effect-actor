@@ -17,72 +17,59 @@ const Counter = Actor.make("Counter", {
     payload: { amount: Schema.Number },
     success: Schema.Number,
   },
+  GetCount: {
+    success: Schema.Number,
+  },
 });
 ```
 
-Every operation supports `call` (block for reply), `cast` (fire-and-forget with receipt), and `peek`/`watch` (check or stream results). Delivery mode is the caller's choice, not the definition's — just like Erlang's `gen_server:call` vs `gen_server:cast`.
+Every operation supports `call` (block for reply) and `cast` (fire-and-forget with receipt). Delivery mode is the caller's choice, not the definition's — just like Erlang's `gen_server:call` vs `gen_server:cast`.
 
 ## Core API
 
 ### Define
 
 ```ts
-// Multi-operation actor
-const OrderValidation = Actor.make("OrderValidation", {
-  Validate: {
-    payload: { orderId: Schema.String },
+const Order = Actor.make("Order", {
+  Place: {
+    payload: { item: Schema.String, qty: Schema.Number },
     success: Schema.String,
-    error: ValidationError,
+    error: OrderError,
     persisted: true,
-    primaryKey: (p) => p.orderId,
+    primaryKey: (p) => p.item,
   },
   Cancel: {
-    payload: { orderId: Schema.String },
+    payload: { reason: Schema.String },
     persisted: true,
-    primaryKey: (p) => p.orderId,
+    primaryKey: (p) => p.reason,
   },
 });
+```
 
-// Single-operation actor (no operation namespace on ref)
-const VectorUpdate = Actor.single("VectorUpdate", {
-  payload: { locationId: Schema.String },
-  persisted: true,
-  primaryKey: (p) => p.locationId,
-});
+Operation constructors are on the object directly:
 
-// Delayed delivery
-const Scheduled = Actor.make("Scheduled", {
-  Process: {
-    payload: { id: Schema.String, deliverAt: Schema.DateTimeUtc },
-    primaryKey: (p) => p.id,
-    deliverAt: (p) => p.deliverAt,
-    persisted: true,
-  },
-});
-
-// Pre-built Schema.Class (escape hatch for custom symbol implementations)
-const WithCustomPayload = Actor.make("Custom", {
-  Run: { payload: MySchemaClass, success: Schema.Void },
-});
+```ts
+Order.Place({ item: "widget", qty: 3 }); // → OperationValue
+Order.Cancel({ reason: "changed mind" });
 ```
 
 ### Handle
 
 ```ts
-// Plain handlers
-const handlers = Handlers.handlers(OrderValidation, {
-  Validate: (req) => validateOrder(req.payload.orderId),
-  Cancel: (req) => cancelOrder(req.payload.orderId),
+// Consumer + producer layer — registers entity handlers AND provides Order.Context
+const OrderLive = Actor.toLayer(Order, {
+  Place: ({ operation }) => Effect.succeed(`order: ${operation.item} x${operation.qty}`),
+  Cancel: ({ operation }) => cancelOrder(operation.reason),
 });
 
-// From Effect context
-const handlers = Handlers.handlers(
-  OrderValidation,
+// With Effect context for dependency injection
+const OrderLive = Actor.toLayer(
+  Order,
   Effect.gen(function* () {
     const db = yield* Database;
     return {
-      Validate: (req) => db.validate(req.payload.orderId),
-      Cancel: (req) => db.cancel(req.payload.orderId),
+      Place: ({ operation }) => db.placeOrder(operation.item, operation.qty),
+      Cancel: ({ operation }) => db.cancel(operation.reason),
     };
   }),
 );
@@ -91,28 +78,76 @@ const handlers = Handlers.handlers(
 ### Call & Cast
 
 ```ts
-const makeRef = yield * Actor.client(OrderValidation);
-const ref = makeRef("order-123");
+// Get a ref to an actor instance
+const ref = yield * Order.actor("order-123");
 
 // call — block for reply
-const result = yield * ref.Validate.call({ orderId: "abc" });
+const result = yield * ref.call(Order.Place({ item: "widget", qty: 3 }));
 
 // cast — fire-and-forget, get receipt
-const receipt = yield * ref.Validate.cast({ orderId: "abc" });
+const receipt = yield * ref.cast(Order.Place({ item: "widget", qty: 3 }));
+```
 
+### Peek & Watch
+
+```ts
 // peek — one-shot status check via receipt
-const status = yield * Peek.peek(OrderValidation, receipt);
+const status = yield * peek(Order, receipt);
 
 // watch — polling stream of status changes
-const stream = Peek.watch(OrderValidation, receipt);
+const stream = watch(Order, receipt);
+```
+
+### Producer-Only (Client Layer)
+
+For services that send messages to actors they don't handle:
+
+```ts
+// No handlers — just provides Order.Context for sending
+const OrderClient = Actor.toLayer(Order);
 ```
 
 ### Test
 
 ```ts
-const makeRef = yield * Testing.testClient(Counter, handlerLayer);
-const ref = yield * makeRef("counter-1");
-const result = yield * ref.Increment.call({ amount: 5 });
+// Actor.toTestLayer provides the same Context tag — call sites are identical
+const OrderTest = Actor.toTestLayer(Order, {
+  Place: ({ operation }) => Effect.succeed(`order: ${operation.item}`),
+  Cancel: () => Effect.void,
+});
+
+// Compose with test infra
+const test = it.scopedLive.layer(Layer.provide(OrderTest, TestShardingConfig));
+
+test("places an order", () =>
+  Effect.gen(function* () {
+    const ref = yield* Order.actor("ord-1");
+    const result = yield* ref.call(Order.Place({ item: "widget", qty: 1 }));
+    expect(result).toBe("order: widget");
+  }));
+```
+
+### Delayed Delivery
+
+```ts
+const Scheduled = Actor.make("Scheduled", {
+  Process: {
+    payload: { id: Schema.String, deliverAt: Schema.DateTimeUtc },
+    primaryKey: (p) => p.id,
+    deliverAt: (p) => p.deliverAt,
+    persisted: true,
+  },
+});
+```
+
+### Pre-built Schema.Class
+
+Escape hatch for custom symbol implementations:
+
+```ts
+const WithCustomPayload = Actor.make("Custom", {
+  Run: { payload: MySchemaClass, success: Schema.Void },
+});
 ```
 
 ## v3 Support

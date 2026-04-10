@@ -1,6 +1,5 @@
 import { describe, expect, it } from "effect-bun-test";
-import { Effect, Ref, Schema } from "effect";
-import type { Layer } from "effect";
+import { Effect, Layer, Ref, Schema } from "effect";
 import { ShardingConfig } from "effect/unstable/cluster";
 import { Actor } from "../src/index.js";
 
@@ -9,8 +8,6 @@ const TestShardingConfig = ShardingConfig.layer({
   entityMailboxCapacity: 10,
   entityTerminationTimeout: 0,
 });
-
-const test = it.scopedLive.layer(TestShardingConfig);
 
 const Echo = Actor.make("Echo", {
   Say: {
@@ -25,30 +22,34 @@ const Echo = Actor.make("Echo", {
   },
 });
 
-const echoHandlers = Actor.toLayer(Echo, {
-  Say: ({ operation }) => Effect.succeed(`echo: ${operation.msg}`),
-  Fire: ({ operation }) => Effect.succeed(operation.x * 2),
-});
+const EchoTest = Layer.provide(
+  Actor.toTestLayer(Echo, {
+    Say: ({ operation }) => Effect.succeed(`echo: ${operation.msg}`),
+    Fire: ({ operation }) => Effect.succeed(operation.x * 2),
+  }),
+  TestShardingConfig,
+);
 
-describe("Actor.Test", () => {
-  test("creates a test client", () =>
+const test = it.scopedLive.layer(EchoTest);
+
+describe("Actor.toTestLayer", () => {
+  test("actor(id) returns an ActorRef", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(Echo, echoHandlers as unknown as Layer.Layer<never>);
-      expect(typeof makeRef).toBe("function");
+      const ref = yield* Echo.actor("test-1");
+      expect(ref.call).toBeDefined();
+      expect(ref.cast).toBeDefined();
     }));
 
   test("call works end-to-end without cluster infrastructure", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(Echo, echoHandlers as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("test-1");
+      const ref = yield* Echo.actor("test-1");
       const result = yield* ref.call(Echo.Say({ msg: "hello" }));
       expect(result).toBe("echo: hello");
     }));
 
   test("cast returns CastReceipt in test mode", () =>
     Effect.gen(function* () {
-      const makeRef = yield* Actor.Test(Echo, echoHandlers as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("test-2");
+      const ref = yield* Echo.actor("test-2");
       const receipt = yield* ref.cast(Echo.Fire({ x: 7 }));
       expect(receipt._tag).toBe("CastReceipt");
       expect(receipt.actorType).toBe("Echo");
@@ -57,7 +58,7 @@ describe("Actor.Test", () => {
       expect(receipt.primaryKey).toBe("7");
     }));
 
-  test("testClient preserves layer requirements for side-effect observation", () =>
+  it.scopedLive("preserves side-effect observation", () =>
     Effect.gen(function* () {
       const calls = yield* Ref.make<Array<string>>([]);
 
@@ -68,19 +69,25 @@ describe("Actor.Test", () => {
         },
       });
 
-      const trackerHandlers = Actor.toLayer(Tracker, {
-        Track: ({ operation }) =>
-          Ref.update(calls, (arr) => [...arr, operation.item]).pipe(
-            Effect.andThen(Effect.succeed(`tracked: ${operation.item}`)),
-          ),
-      });
+      const TrackerTest = Layer.provide(
+        Actor.toTestLayer(Tracker, {
+          Track: ({ operation }) =>
+            Ref.update(calls, (arr) => [...arr, operation.item]).pipe(
+              Effect.as(`tracked: ${operation.item}`),
+            ),
+        }),
+        TestShardingConfig,
+      );
 
-      const makeRef = yield* Actor.Test(Tracker, trackerHandlers as unknown as Layer.Layer<never>);
-      const ref = yield* makeRef("t-1");
-      const result = yield* ref.call(Tracker.Track({ item: "widget" }));
-      expect(result).toBe("tracked: widget");
+      // Provide around the full usage — don't let ActorRef escape the provider scope
+      return yield* Effect.gen(function* () {
+        const ref = yield* Tracker.actor("t-1");
+        const result = yield* ref.call(Tracker.Track({ item: "widget" }));
+        expect(result).toBe("tracked: widget");
 
-      const recorded = yield* Ref.get(calls);
-      expect(recorded).toEqual(["widget"]);
-    }));
+        const recorded = yield* Ref.get(calls);
+        expect(recorded).toEqual(["widget"]);
+      }).pipe(Effect.provide(TrackerTest));
+    }),
+  );
 });
