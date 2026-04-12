@@ -1,9 +1,11 @@
 import { describe, expect, test } from "effect-bun-test";
+import { Schema } from "effect";
 import {
   Defect,
   Failure,
   Interrupted,
   Pending,
+  PeekResultSchema,
   Success,
   Suspended,
   isFailure,
@@ -70,5 +72,45 @@ describe("PeekResult", () => {
   test("Suspended is not terminal", () => {
     expect(isSuspended(Suspended)).toBe(true);
     expect(isTerminal(Suspended)).toBe(false);
+  });
+});
+
+describe("PeekResultSchema", () => {
+  const schema = PeekResultSchema(Schema.String, Schema.Number);
+  const encode = Schema.encodeSync(schema);
+  const decode = Schema.decodeUnknownSync(schema);
+
+  test("round-trips Pending", () => {
+    const value = { _tag: "Pending" as const };
+    expect(decode(encode(value))).toEqual(value);
+  });
+
+  test("round-trips Success", () => {
+    const value = { _tag: "Success" as const, value: "hello" };
+    expect(decode(encode(value))).toEqual(value);
+  });
+
+  test("round-trips Failure", () => {
+    const value = { _tag: "Failure" as const, error: 42 };
+    expect(decode(encode(value))).toEqual(value);
+  });
+
+  test("round-trips Interrupted", () => {
+    const value = { _tag: "Interrupted" as const };
+    expect(decode(encode(value))).toEqual(value);
+  });
+
+  test("round-trips Defect", () => {
+    const value = { _tag: "Defect" as const, cause: "kaboom" };
+    expect(decode(encode(value))).toEqual(value);
+  });
+
+  test("round-trips Suspended", () => {
+    const value = { _tag: "Suspended" as const };
+    expect(decode(encode(value))).toEqual(value);
+  });
+
+  test("rejects unknown _tag", () => {
+    expect(() => decode({ _tag: "Unknown" } as unknown)).toThrow();
   });
 });

@@ -1,4 +1,4 @@
-export { Actor, fromRpcs } from "./actor.js";
+export { Actor, fromRpcs, withProtocol } from "./actor.js";
 export type {
   ActorObject,
   ActorMeta,
@@ -15,6 +15,7 @@ export type {
 export type { ExecId, PeekResult } from "./receipt.js";
 export {
   makeExecId,
+  PeekResultSchema,
   Pending,
   Success,
   Failure,

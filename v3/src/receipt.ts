@@ -1,3 +1,5 @@
+import { Schema } from "effect";
+
 // ── ExecId — branded execution identifier ────────────────────────────────
 
 declare const ExecIdBrand: unique symbol;
@@ -59,3 +61,21 @@ export const isSuspended = <A, E>(result: PeekResult<A, E>): result is { _tag: "
 
 export const isTerminal = <A, E>(result: PeekResult<A, E>): boolean =>
   result._tag !== "Pending" && result._tag !== "Suspended";
+
+// ── PeekResult Schema ───────────────────────────────────────────────────
+
+export const PeekResultSchema = <
+  Success extends Schema.Schema.Any,
+  Error extends Schema.Schema.Any,
+>(
+  success: Success,
+  error: Error,
+) =>
+  Schema.Union(
+    Schema.Struct({ _tag: Schema.Literal("Pending") }),
+    Schema.Struct({ _tag: Schema.Literal("Success"), value: success }),
+    Schema.Struct({ _tag: Schema.Literal("Failure"), error: error }),
+    Schema.Struct({ _tag: Schema.Literal("Interrupted") }),
+    Schema.Struct({ _tag: Schema.Literal("Defect"), cause: Schema.Unknown }),
+    Schema.Struct({ _tag: Schema.Literal("Suspended") }),
+  );

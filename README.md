@@ -137,6 +137,44 @@ ProcessOrder.interrupt("ord-1");
 ProcessOrder.resume("ord-1");
 ```
 
+### Protocol Transform
+
+Transform the underlying `RpcGroup` protocol — middleware, annotations, or any protocol-level operation:
+
+```ts
+import { RpcMiddleware } from "effect/unstable/rpc";
+
+class AuthMiddleware extends RpcMiddleware.Service<AuthMiddleware>()("AuthMiddleware", {
+  error: Schema.Never,
+}) {}
+
+const SecureOrder = Actor.fromEntity("Order", defs).pipe(
+  Actor.withProtocol((protocol) => protocol.middleware(AuthMiddleware)),
+);
+```
+
+Workflows don't have an RPC protocol — wrap the handler directly:
+
+```ts
+const ProcessOrderLive = Actor.toLayer(ProcessOrder, (payload, executionId) =>
+  myHandler(payload, executionId).pipe(
+    Effect.withSpan("ProcessOrder.Run", { attributes: { executionId } }),
+  ),
+);
+```
+
+### PeekResult Schema
+
+Encode/decode `PeekResult` values for serialization:
+
+```ts
+import { PeekResultSchema } from "effect-encore";
+
+const schema = PeekResultSchema(Schema.String, OrderError);
+const decode = Schema.decodeUnknownSync(schema);
+const encode = Schema.encodeSync(schema);
+```
+
 ### Delayed Delivery
 
 ```ts

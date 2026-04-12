@@ -10,7 +10,7 @@ import {
 } from "effect/unstable/cluster";
 import * as DeliverAt from "effect/unstable/cluster/DeliverAt";
 import type { MalformedMessage, PersistenceError } from "effect/unstable/cluster/ClusterError";
-import type { Rpc, RpcClient, RpcMessage } from "effect/unstable/rpc";
+import type { Rpc, RpcClient, RpcGroup, RpcMessage } from "effect/unstable/rpc";
 import { Rpc as RpcMod } from "effect/unstable/rpc";
 import { Workflow as UpstreamWorkflow } from "effect/unstable/workflow";
 import type { WorkflowEngine } from "effect/unstable/workflow/WorkflowEngine";
@@ -23,6 +23,7 @@ import {
   Exit,
   Layer,
   Option,
+  Pipeable,
   PrimaryKey,
   Schedule,
   Schema,
@@ -61,7 +62,17 @@ export type OperationDefs = Record<string, OperationDef>;
 
 // ── Reserved key guard ─────────────────────────────────────────────────────
 
-type ReservedKeys = "_tag" | "_meta" | "$is" | "Context" | "actor" | "peek" | "watch" | "interrupt";
+type ReservedKeys =
+  | "_tag"
+  | "_meta"
+  | "$is"
+  | "Context"
+  | "actor"
+  | "peek"
+  | "watch"
+  | "interrupt"
+  | "executionId"
+  | "pipe";
 
 type AssertNoReservedKeys<Defs extends OperationDefs> =
   Extract<keyof Defs, ReservedKeys> extends never ? Defs : never;
@@ -75,6 +86,8 @@ const RESERVED_KEYS = new Set<string>([
   "peek",
   "watch",
   "interrupt",
+  "executionId",
+  "pipe",
 ]);
 
 // ── Type-level Rpc mirror ──────────────────────────────────────────────────
@@ -252,37 +265,41 @@ export type ActorObject<
   Name extends string,
   Defs extends OperationDefs,
   Rpcs extends Rpc.Any = DefRpcs<Defs>,
-> = ActorConstructors<Name, Defs> & {
-  readonly _tag: "ActorObject";
-  readonly _meta: ActorMeta<Name, Defs, Rpcs>;
-  readonly Context: Context.Service<ActorClientService<Name, Defs>, ActorClientFactory<Name, Defs>>;
-  readonly actor: (
-    entityId: string,
-  ) => Effect.Effect<ActorRef<Name, Defs>, never, ActorClientService<Name, Defs>>;
-  readonly peek: <S, E>(
-    execId: ExecId<S, E>,
-  ) => Effect.Effect<
-    PeekResult<S, E>,
-    PersistenceError | MalformedMessage,
-    MessageStorage.MessageStorage | Sharding.Sharding
-  >;
-  readonly watch: <S, E>(
-    execId: ExecId<S, E>,
-    options?: { readonly interval?: Duration.Input },
-  ) => Stream.Stream<
-    PeekResult<S, E>,
-    PersistenceError | MalformedMessage,
-    MessageStorage.MessageStorage | Sharding.Sharding
-  >;
-  readonly executionId: <V extends OperationUnion<Name, Defs>>(
-    entityId: string,
-    op: V,
-  ) => Effect.Effect<ExecId<OperationOutput<V>, OperationError<V>>>;
-  readonly interrupt: (entityId: string) => Effect.Effect<void, never, Sharding.Sharding>;
-  readonly $is: <Tag extends keyof Defs & string>(
-    tag: Tag,
-  ) => (value: unknown) => value is OperationValue<Name, Tag, Defs[Tag]>;
-};
+> = ActorConstructors<Name, Defs> &
+  Pipeable.Pipeable & {
+    readonly _tag: "ActorObject";
+    readonly _meta: ActorMeta<Name, Defs, Rpcs>;
+    readonly Context: Context.Service<
+      ActorClientService<Name, Defs>,
+      ActorClientFactory<Name, Defs>
+    >;
+    readonly actor: (
+      entityId: string,
+    ) => Effect.Effect<ActorRef<Name, Defs>, never, ActorClientService<Name, Defs>>;
+    readonly peek: <S, E>(
+      execId: ExecId<S, E>,
+    ) => Effect.Effect<
+      PeekResult<S, E>,
+      PersistenceError | MalformedMessage,
+      MessageStorage.MessageStorage | Sharding.Sharding
+    >;
+    readonly watch: <S, E>(
+      execId: ExecId<S, E>,
+      options?: { readonly interval?: Duration.Input },
+    ) => Stream.Stream<
+      PeekResult<S, E>,
+      PersistenceError | MalformedMessage,
+      MessageStorage.MessageStorage | Sharding.Sharding
+    >;
+    readonly executionId: <V extends OperationUnion<Name, Defs>>(
+      entityId: string,
+      op: V,
+    ) => Effect.Effect<ExecId<OperationOutput<V>, OperationError<V>>>;
+    readonly interrupt: (entityId: string) => Effect.Effect<void, never, Sharding.Sharding>;
+    readonly $is: <Tag extends keyof Defs & string>(
+      tag: Tag,
+    ) => (value: unknown) => value is OperationValue<Name, Tag, Defs[Tag]>;
+  };
 
 // ── Compile runtime ────────────────────────────────────────────────────────
 
@@ -571,7 +588,7 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
       ),
     );
 
-  const actor = {
+  const actor = Object.assign(Object.create(Pipeable.Prototype), {
     _tag: "ActorObject" as const,
     _meta: { name, definitions, entity },
     Context: contextTag,
@@ -582,9 +599,9 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
     interrupt: interruptFn,
     $is,
     ...constructors,
-  };
+  });
 
-  return actor as unknown as ActorObject<Name, Defs>;
+  return actor as ActorObject<Name, Defs>;
 };
 
 // ── Actor.toLayer ──────────────────────────────────────────────────────────
@@ -609,7 +626,7 @@ function toLayer<
   actor: ActorObject<Name, Defs, Rpcs>,
   build: ActorHandlers<Defs> | Effect.Effect<ActorHandlers<Defs>, never, RX>,
   options?: HandlerOptions,
-  /* eslint-disable typescript-eslint/no-explicit-any -- overload requires any */
+  /* eslint-disable typescript-eslint/no-explicit-any -- handler services are open */
 ): Layer.Layer<ActorClientService<Name, Defs>, never, any>;
 
 // Workflow overload
@@ -1064,12 +1081,31 @@ export const fromRpcs = <const Name extends string, const Rpcs extends ReadonlyA
   entity: Entity.make(name, rpcs as unknown as Array<Rpcs[number]>),
 });
 
+// ── Protocol transform ────────────────────────────────────────────────────
+
+/* eslint-disable typescript-eslint/no-explicit-any -- variance bypass for Entity<in out Rpcs> */
+export const withProtocol =
+  <RpcsOut extends Rpc.Any>(
+    transform: (protocol: RpcGroup.RpcGroup<any>) => RpcGroup.RpcGroup<RpcsOut>,
+  ): (<Name extends string, Defs extends OperationDefs>(
+    actor: ActorObject<Name, Defs, any>,
+  ) => ActorObject<Name, Defs, RpcsOut>) =>
+  (actor) => {
+    const newEntity = Entity.fromRpcGroup(
+      actor._meta.name,
+      transform(actor._meta.entity.protocol as any),
+    );
+    return { ...actor, _meta: { ...actor._meta, entity: newEntity } } as any;
+  };
+/* eslint-enable typescript-eslint/no-explicit-any */
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 export const Actor = {
   fromEntity,
   fromWorkflow,
   fromRpcs,
+  withProtocol,
   toLayer,
   toTestLayer,
 } as const;

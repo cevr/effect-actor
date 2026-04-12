@@ -7,11 +7,16 @@
 // wrapping each handler in `Effect.withSpan`. No custom RpcMiddleware needed.
 //
 // To add custom attributes to these spans, pass `spanAttributes` to
-// `Handlers.handlers(actor, build, { spanAttributes: { ... } })`.
+// `Actor.toLayer(actor, build, { spanAttributes: { ... } })`.
 //
-// For advanced use cases (custom middleware, auth, rate limiting), attach
-// middleware directly to Rpcs before passing to `Actor.from()`:
-//   `Rpc.make("Op", {...}).middleware(MyMiddleware)`
+// For advanced use cases (custom middleware, auth, rate limiting), use
+// `Actor.withProtocol` to transform the underlying RpcGroup protocol:
+//
+//   import { Actor } from "effect-encore/v3"
+//
+//   const MyActor = Actor.fromEntity("MyActor", defs).pipe(
+//     Actor.withProtocol((protocol) => protocol.middleware(MyMiddleware)),
+//   )
 
 export { CurrentAddress } from "@effect/cluster/Entity";
 

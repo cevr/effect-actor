@@ -354,3 +354,36 @@ describe("deliverAt", () => {
     expect(rpc.payloadSchema).toBe(ScheduledPayload);
   });
 });
+
+describe("Actor.withProtocol", () => {
+  test("transforms the entity protocol", () => {
+    const original = Counter._meta.entity;
+
+    const transformed = Counter.pipe(Actor.withProtocol((protocol) => protocol));
+
+    expect(transformed._tag).toBe("ActorObject");
+    expect(transformed._meta.name).toBe("Counter");
+    // New entity — not the same reference
+    expect(transformed._meta.entity).not.toBe(original);
+    // Operations are preserved
+    expect(Object.keys(transformed._meta.definitions)).toEqual(["Increment", "GetCount"]);
+  });
+
+  test("preserves operation constructors after transform", () => {
+    const transformed = Counter.pipe(Actor.withProtocol((protocol) => protocol));
+
+    const op = transformed.Increment({ amount: 5 });
+    expect(op._tag).toBe("Increment");
+    expect(op.amount).toBe(5);
+  });
+
+  test("pipe is chainable", () => {
+    const transformed = Counter.pipe(
+      Actor.withProtocol((protocol) => protocol),
+      Actor.withProtocol((protocol) => protocol),
+    );
+
+    expect(transformed._tag).toBe("ActorObject");
+    expect(transformed._meta.name).toBe("Counter");
+  });
+});
