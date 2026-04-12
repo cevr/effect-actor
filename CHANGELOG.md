@@ -1,5 +1,13 @@
 # effect-encore
 
+## 0.4.3
+
+### Patch Changes
+
+- [`59961e1`](https://github.com/cevr/effect-encore/commit/59961e1f81d0251ea0f4e5161fc58d22d2c4f8c5) Thanks [@cevr](https://github.com/cevr)! - Fix `Actor.toLayer` layer composition — use passthrough so Sharding/WorkflowEngine flow through to program code.
+
+  The handler layer consumes these services without re-providing them, so `ref.execute()` and `ref.send()` couldn't find them at runtime. v3 uses `Layer.passthrough`; v4 uses a local polyfill via `Layer.merge(Layer.effectContext(Effect.context<RIn>()), layer)`.
+
 ## 0.4.2
 
 ### Patch Changes
