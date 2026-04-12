@@ -2,11 +2,16 @@
 
 Erlang gen_server semantics over `@effect/cluster`.
 
+```bash
+bun add effect-encore
+```
+
+Peer dependency: `effect >= 4.0.0-beta.46`.
+For v3 `@effect/cluster` compat: `import { Actor } from "effect-encore/v3"`.
+
 ## Why
 
-`@effect/cluster` is powerful but low-level. Defining a single entity requires custom `Schema.Class` implementations, `Rpc.make`, `RpcGroup`, `Entity.make`, handler wiring via `entity.toLayer`, and a hand-rolled client service. A typical entity runs 100+ lines before any business logic.
-
-effect-encore compresses this into a declarative DSL with a unified call site for both entities and workflows.
+`@effect/cluster` entities require custom `Schema.Class`, `Rpc.make`, `RpcGroup`, `Entity.make`, handler wiring, and a hand-rolled client service. effect-encore compresses this into a declarative DSL.
 
 ## Core API
 
@@ -61,15 +66,17 @@ const execId = yield * ref.cast(ProcessOrder.Run({ orderId: "ord-1" }));
 Track execution status via opaque `ExecId`:
 
 ```ts
-// cast returns ExecId<Success, Error> — branded string with phantom types
 const execId = yield * ref.cast(Order.Place({ item: "widget", qty: 3 }));
 
-// peek — one-shot status check (on the actor object, not standalone)
+// one-shot status check
 const status = yield * Order.peek(execId);
 // → Pending | Success | Failure | Interrupted | Defect | Suspended
 
-// watch — polling stream
+// polling stream
 const stream = Order.watch(execId);
+
+// compute ExecId without executing
+const id = yield * Order.executionId("ord-1", Order.Place({ item: "widget", qty: 3 }));
 ```
 
 ### Handle
@@ -96,8 +103,6 @@ const ProcessOrderLive = Actor.toLayer(ProcessOrder, (payload) =>
 
 ### Producer-Only (Client Layer)
 
-For services that send messages to actors they don't handle:
-
 ```ts
 const OrderClient = Actor.toLayer(Order);
 ```
@@ -105,13 +110,11 @@ const OrderClient = Actor.toLayer(Order);
 ### Test
 
 ```ts
-// Entity test
 const OrderTest = Actor.toTestLayer(Order, {
   Place: ({ operation }) => Effect.succeed(`order: ${operation.item}`),
   Cancel: () => Effect.void,
 });
 
-// Workflow test — WorkflowEngine.layerMemory provided automatically
 const ProcessOrderTest = Actor.toTestLayer(ProcessOrder, (payload) =>
   Effect.succeed({ orderId: payload.orderId, status: "ok" }),
 );
@@ -129,16 +132,9 @@ test("places an order", () =>
 ### Lifecycle
 
 ```ts
-// Entity: passivate
-Order.interrupt("ord-1");
-
 // Workflow: cancel + resume
 ProcessOrder.interrupt("ord-1");
 ProcessOrder.resume("ord-1");
-
-// Workflow-only: execution ID, compensation
-const execId = yield * ProcessOrder.executionId({ orderId: "ord-1" });
-const compensated = ProcessOrder.withCompensation(activity, (value, cause) => rollback(value));
 ```
 
 ### Delayed Delivery
@@ -154,28 +150,16 @@ const Scheduled = Actor.fromEntity("Scheduled", {
 });
 ```
 
-### Handler Primitives
+### Workflow Primitives
 
-Import workflow primitives from upstream directly:
+Import from upstream directly:
 
 ```ts
 // v4
-import { Activity, DurableDeferred, DurableClock } from "effect/unstable/workflow";
+import { Activity, DurableDeferred, DurableClock, Workflow } from "effect/unstable/workflow";
 // v3
-import { Activity, DurableDeferred, DurableClock } from "@effect/workflow";
+import { Activity, DurableDeferred, DurableClock, Workflow } from "@effect/workflow";
 ```
-
-## v3 Support
-
-Import from `effect-encore/v3` for `@effect/cluster` v3 compatibility. Same API, different import paths under the hood.
-
-## Install
-
-```bash
-bun add effect-encore
-```
-
-Peer dependencies: `effect`, `@effect/cluster` (v3) or `effect` with `effect/unstable/cluster` (v4).
 
 ## License
 
