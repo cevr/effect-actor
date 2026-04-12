@@ -204,6 +204,12 @@ test("places an order", () =>
 // Workflow: cancel + resume
 yield * ProcessOrder.interrupt("ord-1");
 yield * ProcessOrder.resume("ord-1");
+
+// Entity: flush all messages + replies
+yield * Order.flush("ord-1");
+
+// Entity: redeliver — clear read leases so unprocessed messages re-enter polling
+yield * Order.redeliver("ord-1");
 ```
 
 ### Protocol Transform
