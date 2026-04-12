@@ -42,7 +42,7 @@
     "test:v3": "bun test --tsconfig-override=v3/tsconfig.json v3/test/",
     "test:watch": "bun test --watch",
     "gate": "concurrently -n type,type:v3,lint,fmt,build,test -c blue,blue,yellow,magenta,cyan,green \"bun run typecheck\" \"bun run typecheck:v3\" \"bun run lint\" \"bun run fmt\" \"bun run build\" \"bun run test\"",
-    "build": "tsdown && tsdown --config v3/tsdown.config.ts",
+    "build": "concurrently \"tsdown\" \"tsdown --config v3/tsdown.config.ts\"",
     "release": "bun run build && changeset publish",
     "version": "changeset version",
     "prepare": "lefthook install"
