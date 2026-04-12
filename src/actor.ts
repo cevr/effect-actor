@@ -730,7 +730,7 @@ function toLayer(
     mailboxCapacity: options?.mailboxCapacity,
   });
 
-  return Layer.merge(handlerLayer, clientLayer);
+  return Layer.provideMerge(handlerLayer, clientLayer);
 }
 
 // ── Actor.toTestLayer ─────────────────────────────────────────────────────
@@ -1165,7 +1165,7 @@ const workflowToLayer = (
     Effect.succeed((entityId: string) => Effect.succeed(buildWorkflowActorRef(actor, entityId))),
   );
 
-  return Layer.merge(handlerLayer, clientLayer);
+  return Layer.provideMerge(handlerLayer, clientLayer);
 };
 
 const workflowToTestLayer = (
