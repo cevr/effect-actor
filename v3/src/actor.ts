@@ -1,4 +1,4 @@
-import type { Entity as ClusterEntity, EntityType } from "@effect/cluster";
+import type { Entity as ClusterEntity } from "@effect/cluster";
 import {
   ClusterSchema,
   Entity,
@@ -83,6 +83,8 @@ type ReservedKeys =
   | "waitFor"
   | "interrupt"
   | "executionId"
+  | "flush"
+  | "redeliver"
   | "pipe";
 
 type AssertNoReservedKeys<Defs extends OperationDefs> =
@@ -99,6 +101,8 @@ const RESERVED_KEYS = new Set<string>([
   "waitFor",
   "interrupt",
   "executionId",
+  "flush",
+  "redeliver",
   "pipe",
 ]);
 
@@ -321,6 +325,12 @@ export type ActorObject<
       op: V,
     ) => Effect.Effect<ExecId<OperationOutput<V>, OperationError<V>>>;
     readonly interrupt: (entityId: string) => Effect.Effect<void, never, Sharding.Sharding>;
+    readonly flush: (
+      actorId: string,
+    ) => Effect.Effect<void, PersistenceError, MessageStorage.MessageStorage | Sharding.Sharding>;
+    readonly redeliver: (
+      actorId: string,
+    ) => Effect.Effect<void, PersistenceError, MessageStorage.MessageStorage | Sharding.Sharding>;
     readonly $is: <Tag extends keyof Defs & string>(
       tag: Tag,
     ) => (value: unknown) => value is OperationValue<Name, Tag, Defs[Tag]>;
@@ -410,8 +420,44 @@ const parseExecId = (execId: string) => {
   };
 };
 
+// eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs type erased at runtime
+const resolveAddress = (entity: ClusterEntity.Entity<string, any>, actorId: string) =>
+  Effect.gen(function* () {
+    const sharding = yield* Sharding.Sharding;
+    const entityId = EntityId.make(actorId);
+    const shardId = sharding.getShardId(entityId, entity.getShardGroup(entityId));
+    return EntityAddress.make({
+      entityType: entity.type,
+      entityId,
+      shardId,
+    });
+  });
+
+const flushImpl = (
+  // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs type erased
+  entity: ClusterEntity.Entity<string, any>,
+  actorId: string,
+): Effect.Effect<void, PersistenceError, MessageStorage.MessageStorage | Sharding.Sharding> =>
+  Effect.gen(function* () {
+    const storage = yield* MessageStorage.MessageStorage;
+    const address = yield* resolveAddress(entity, actorId);
+    yield* storage.clearAddress(address);
+  });
+
+const redeliverImpl = (
+  // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs type erased
+  entity: ClusterEntity.Entity<string, any>,
+  actorId: string,
+): Effect.Effect<void, PersistenceError, MessageStorage.MessageStorage | Sharding.Sharding> =>
+  Effect.gen(function* () {
+    const storage = yield* MessageStorage.MessageStorage;
+    const address = yield* resolveAddress(entity, actorId);
+    yield* storage.resetAddress(address);
+  });
+
 const peekImpl = (
-  actorName: string,
+  // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs type erased
+  entity: ClusterEntity.Entity<string, any>,
   execId: string,
   definitions?: OperationDefs,
 ): Effect.Effect<
@@ -422,18 +468,8 @@ const peekImpl = (
   const parsed = parseExecId(execId);
 
   return Effect.gen(function* () {
-    const sharding = yield* Sharding.Sharding;
     const storage = yield* MessageStorage.MessageStorage;
-
-    const entityId = EntityId.make(parsed.entityId);
-    const entityType = actorName as unknown as EntityType.EntityType;
-    const shardId = sharding.getShardId(entityId, entityType);
-
-    const address = EntityAddress.make({
-      entityType,
-      entityId,
-      shardId,
-    });
+    const address = yield* resolveAddress(entity, parsed.entityId);
 
     const maybeRequestId = yield* storage.requestIdForPrimaryKey({
       address,
@@ -553,7 +589,8 @@ const mapExitToWorkflowPeekResult = (exit: Exit.Exit<unknown, unknown>): PeekRes
 };
 
 const watchImpl = (
-  actorName: string,
+  // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs type erased
+  entity: ClusterEntity.Entity<string, any>,
   execId: string,
   definitions?: OperationDefs,
   options?: { readonly interval?: Duration.DurationInput },
@@ -564,7 +601,7 @@ const watchImpl = (
 > => {
   const interval = options?.interval ?? Duration.millis(200);
   return Stream.repeatEffectWithSchedule(
-    peekImpl(actorName, execId, definitions),
+    peekImpl(entity, execId, definitions),
     Schedule.spaced(interval),
   ).pipe(Stream.changesWith(peekResultEquals), Stream.takeUntil(isTerminal));
 };
@@ -645,8 +682,11 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
 
   const actorFn = (entityId: string) => Effect.flatMap(contextTag, (factory) => factory(entityId));
 
+  // eslint-disable-next-line typescript-eslint/no-explicit-any -- Entity<Name> → Entity<string> widening
+  const entityAny = entity as unknown as ClusterEntity.Entity<string, any>;
+
   const peekFn = <S, E>(execId: ExecId<S, E>) =>
-    peekImpl(name, execId, definitions) as Effect.Effect<
+    peekImpl(entityAny, execId, definitions) as Effect.Effect<
       PeekResult<S, E>,
       PersistenceError | MalformedMessage,
       MessageStorage.MessageStorage | Sharding.Sharding
@@ -656,11 +696,14 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
     execId: ExecId<S, E>,
     options?: { readonly interval?: Duration.DurationInput },
   ) =>
-    watchImpl(name, execId, definitions, options) as Stream.Stream<
+    watchImpl(entityAny, execId, definitions, options) as Stream.Stream<
       PeekResult<S, E>,
       PersistenceError | MalformedMessage,
       MessageStorage.MessageStorage | Sharding.Sharding
     >;
+
+  const flushFn = (actorId: string) => flushImpl(entityAny, actorId);
+  const redeliverFn = (actorId: string) => redeliverImpl(entityAny, actorId);
 
   const executionIdFn = (
     entityId: string,
@@ -698,6 +741,8 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
     ) => makeWaitFor(peekFn, execId, options),
     executionId: executionIdFn,
     interrupt: interruptFn,
+    flush: flushFn,
+    redeliver: redeliverFn,
     $is,
     ...constructors,
   });
