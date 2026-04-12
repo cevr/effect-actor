@@ -170,18 +170,10 @@ Workflow handlers receive `(payload, step)` — a `WorkflowStepContext` that wra
 
 ### step.run — execute a durable activity
 
+**Always provide `success` and `error` schemas.** Activities serialize results through JSON — explicit schemas ensure durable round-tripping and typed decode. The shorthand (`step.run(id, effect)`) uses `Schema.Unknown` internally, which accepts any JSON-safe value but loses type safety on decode. Use it for prototyping; prefer full options for production workflows.
+
 ```ts
-// Shorthand — infallible
-const result = yield * step.run("validate", validateOrder(payload.orderId));
-
-// Shorthand with undo (saga compensation)
-const charge =
-  yield *
-  step.run("charge", chargeCard(payload.cardId, payload.amount), (chargeResult, cause) =>
-    refundCard(chargeResult.chargeId),
-  );
-
-// Full options
+// Full options (recommended) — explicit schemas for durable serialization
 const result =
   yield *
   step.run("process", {
@@ -191,6 +183,16 @@ const result =
     undo: (value, cause) => refundPayment(value.paymentId),
     retry: { times: 3 }, // or a Schedule
   });
+
+// Shorthand — infallible, uses Schema.Unknown (quick & dirty, prototyping)
+const result = yield * step.run("validate", validateOrder(payload.orderId));
+
+// Shorthand with undo (saga compensation) — same Schema.Unknown caveat
+const charge =
+  yield *
+  step.run("charge", chargeCard(payload.cardId, payload.amount), (chargeResult, cause) =>
+    refundCard(chargeResult.chargeId),
+  );
 ```
 
 ### step.sleep — durable sleep
@@ -267,7 +269,10 @@ yield * step.addFinalizer((exit) => cleanup(exit));
 ```ts
 const ProcessOrderLive = Actor.toLayer(ProcessOrder, (payload, step) =>
   Effect.gen(function* () {
-    const validated = yield* step.run("validate", validateOrder(payload.orderId));
+    const validated = yield* step.run("validate", {
+      do: validateOrder(payload.orderId),
+      success: ValidatedOrder,
+    });
 
     const charge = yield* step.run("charge", {
       do: chargeCard(validated.cardId, validated.amount),
@@ -313,7 +318,10 @@ const CounterLive = Actor.toLayer(
 ```ts
 const ProcessOrderLive = Actor.toLayer(ProcessOrder, (payload, step) =>
   Effect.gen(function* () {
-    const validated = yield* step.run("validate", validateOrder(payload.orderId));
+    const validated = yield* step.run("validate", {
+      do: validateOrder(payload.orderId),
+      success: ValidatedOrder,
+    });
     return { orderId: payload.orderId, status: "ok" };
   }),
 );

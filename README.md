@@ -101,24 +101,24 @@ const OrderLive = Actor.toLayer(Order, {
 
 ### Handle — Workflow (Step DSL)
 
-Workflow handlers receive `(payload, step)` — a context object that wraps upstream workflow primitives:
+Workflow handlers receive `(payload, step)` — a context object that wraps upstream workflow primitives.
+
+**Always provide `success` and `error` schemas.** Activities serialize results through JSON — explicit schemas ensure durable round-tripping and typed decode. The shorthand (`step.run(id, effect)`) uses `Schema.Unknown` internally, which accepts any JSON-safe value but loses type safety on decode. Use it for prototyping; prefer full options for production workflows.
 
 ```ts
 const ProcessOrderLive = Actor.toLayer(ProcessOrder, (payload, step) =>
   Effect.gen(function* () {
-    // step.run — shorthand (infallible only)
-    const order = yield* step.run("create-order", createOrder(payload));
+    // step.run — full options (recommended)
+    const order = yield* step.run("create-order", {
+      do: createOrder(payload),
+      success: OrderSchema,
+    });
 
-    // step.run — shorthand with undo (value, cause)
-    const charge = yield* step.run("charge-card", chargeCard(order), (charge, _cause) =>
-      refundCharge(charge.id),
-    );
-
-    // step.run — full options (typed errors, retry)
-    const receipt = yield* step.run("send-receipt", {
-      do: sendReceipt(order, charge),
-      success: ReceiptSchema,
-      error: ReceiptError,
+    // step.run — with undo (compensation on workflow failure)
+    const charge = yield* step.run("charge-card", {
+      do: chargeCard(order),
+      success: ChargeResult,
+      undo: (charge, _cause) => refundCharge(charge.id),
       retry: { times: 3 },
     });
 
@@ -128,15 +128,20 @@ const ProcessOrderLive = Actor.toLayer(ProcessOrder, (payload, step) =>
     // step.signal — await external input
     const approval = step.signal({ name: "manager-approval", success: ApprovalDecision });
     const token = yield* approval.token;
-    yield* step.run("send-approval-email", sendApprovalEmail({ token }));
+    yield* step.run("send-approval-email", {
+      do: sendApprovalEmail({ token }),
+      success: Schema.Void,
+    });
     const decision = yield* approval.await;
 
     // step.race — first activity to complete wins
-    const winner = yield* step.race("fast-path", [activity1, activity2]);
+    const winner = yield* step.race("fast-path", [
+      { name: "route-a", execute: routeA(order), success: RouteResult },
+      { name: "route-b", execute: routeB(order), success: RouteResult },
+    ]);
 
-    // step.executionId, step.attempt
-    const key = `${step.executionId}/my-key`;
-    const attempt = yield* step.attempt;
+    // step.run — shorthand (infallible, Schema.Unknown — quick & dirty)
+    const debug = yield* step.run("log", Effect.succeed("ok"));
 
     return { orderId: order.id, chargeId: charge.id };
   }),
@@ -173,7 +178,10 @@ const OrderTest = Actor.toTestLayer(Order, {
 
 const ProcessOrderTest = Actor.toTestLayer(ProcessOrder, (payload, step) =>
   Effect.gen(function* () {
-    yield* step.run("work", Effect.succeed("done"));
+    yield* step.run("work", {
+      do: Effect.succeed("done"),
+      success: Schema.String,
+    });
     return { orderId: payload.orderId, status: "ok" };
   }),
 );
