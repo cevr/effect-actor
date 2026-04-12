@@ -107,6 +107,49 @@ describe("Actor.fromWorkflow — errors", () => {
       expect(Exit.isFailure(exit)).toBe(true);
     }),
   );
+
+  it.scopedLive.layer(FailingTest)(
+    "peek returns Failure with user's typed error, not raw Cause",
+    () =>
+      Effect.gen(function* () {
+        const ref = yield* FailingWorkflow.actor("f-peek");
+        const execId = yield* ref.cast(FailingWorkflow.Run({ input: "peek-fail" }));
+
+        yield* Effect.sleep("50 millis");
+        const result = yield* FailingWorkflow.peek(execId);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") {
+          // Should be the user's OrderError, not a raw Cause tree
+          expect(result.error).toBeInstanceOf(OrderError);
+        }
+      }),
+  );
+});
+
+// ── Workflow with defect ────────────────────────────────────────────────────
+
+const DefectWorkflow = Actor.fromWorkflow("DefectWorkflow", {
+  payload: { input: Schema.String },
+  success: Schema.String,
+  idempotencyKey: (p: { input: string }) => p.input,
+});
+
+const DefectTest = Actor.toTestLayer(DefectWorkflow, () => Effect.die("unexpected crash"));
+
+describe("Actor.fromWorkflow — defects", () => {
+  it.scopedLive.layer(DefectTest)("peek returns Defect for die, not Failure", () =>
+    Effect.gen(function* () {
+      const ref = yield* DefectWorkflow.actor("d-1");
+      const execId = yield* ref.cast(DefectWorkflow.Run({ input: "boom" }));
+
+      yield* Effect.sleep("50 millis");
+      const result = yield* DefectWorkflow.peek(execId);
+      expect(result._tag).toBe("Defect");
+      if (result._tag === "Defect") {
+        expect(result.cause).toBe("unexpected crash");
+      }
+    }),
+  );
 });
 
 // ── Workflow lifecycle ────────────────────────────────────────────────────

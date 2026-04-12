@@ -33,7 +33,7 @@ const TestCluster = TestRunner.layer;
 describe("Actor.peek", () => {
   it.scopedLive("returns Pending when handler has not completed", () =>
     Effect.gen(function* () {
-      const execId = makeExecId("e-1:Process:nonexistent");
+      const execId = makeExecId("e-1\x00Process\x00nonexistent");
       const result = yield* PeekableActor.peek(execId);
       expect(result._tag).toBe("Pending");
     }).pipe(
@@ -48,7 +48,7 @@ describe("Actor.peek", () => {
       const client = makeClient("e-2");
       yield* client.Process({ input: "hello" });
 
-      const execId = makeExecId("e-2:Process:hello");
+      const execId = makeExecId("e-2\x00Process\x00hello");
       const result = yield* PeekableActor.peek(execId);
       expect(result._tag).toBe("Success");
       if (result._tag === "Success") {
@@ -66,7 +66,7 @@ describe("Actor.peek", () => {
       const client = makeClient("e-3");
       yield* client.Fail({ input: "bad" }).pipe(Effect.option);
 
-      const execId = makeExecId("e-3:Fail:bad");
+      const execId = makeExecId("e-3\x00Fail\x00bad");
       const result = yield* PeekableActor.peek(execId);
       expect(result._tag).toBe("Failure");
     }).pipe(

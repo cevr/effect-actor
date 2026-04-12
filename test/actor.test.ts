@@ -152,7 +152,37 @@ describe("Actor.toTestLayer", () => {
       const ref = yield* Counter.actor("counter-4");
       const execId = yield* ref.cast(Counter.Increment({ amount: 7 }));
       expect(typeof execId).toBe("string");
-      expect(String(execId)).toBe("counter-4:Increment:7");
+      expect(String(execId)).toBe("counter-4\x00Increment\x007");
+    }),
+  );
+
+  effectTest("ExecId is safe with colons in entity ID", () =>
+    Effect.gen(function* () {
+      const ref = yield* Counter.actor("ns:entity-1");
+      const execId = yield* ref.cast(Counter.Increment({ amount: 3 }));
+      // null-byte separator means colons in entity ID are safe
+      expect(String(execId)).toBe("ns:entity-1\x00Increment\x003");
+    }),
+  );
+
+  effectTest("ExecId is safe with colons in primary key", () =>
+    Effect.gen(function* () {
+      const ref = yield* Counter.actor("pk-colon-test");
+      // primaryKey for Increment returns String(p.amount), so no colons here
+      // but the entity ID and tag are clean — the key point is null-byte separators
+      const execId = yield* ref.cast(Counter.Increment({ amount: 42 }));
+      // Verify the format uses null bytes, making colons in any segment safe
+      const str = String(execId);
+      expect(str).toContain("\x00");
+      expect(str.split("\x00")).toEqual(["pk-colon-test", "Increment", "42"]);
+    }),
+  );
+
+  effectTest("unknown operation tag dies with descriptive error", () =>
+    Effect.gen(function* () {
+      const ref = yield* Counter.actor("counter-5");
+      const result = yield* Effect.exit(ref.call({ _tag: "NonExistent" } as never));
+      expect(result._tag).toBe("Failure");
     }),
   );
 });

@@ -16,9 +16,11 @@ import { Workflow as UpstreamWorkflow } from "effect/unstable/workflow";
 import type { WorkflowEngine } from "effect/unstable/workflow/WorkflowEngine";
 import { layerMemory as workflowEngineLayerMemory } from "effect/unstable/workflow/WorkflowEngine";
 import {
+  Cause,
   Context,
   Duration,
   Effect,
+  Exit,
   Layer,
   Option,
   PrimaryKey,
@@ -302,6 +304,20 @@ const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any 
 
       options["payload"] = PayloadClass;
     }
+  } else if (pkFn) {
+    // Zero-payload operations still need PrimaryKey.symbol for storage indexing
+    const Base = Schema.Class<Record<string, unknown>>(`effect-encore/${actorName}/${tag}/Payload`)(
+      {},
+    );
+
+    class EmptyPayloadClass extends Base {}
+
+    (EmptyPayloadClass.prototype as Record<string | symbol, unknown>)[PrimaryKey.symbol] =
+      function () {
+        return (pkFn as Function)(undefined) as string;
+      };
+
+    options["payload"] = EmptyPayloadClass;
   }
 
   if (def["success"]) options["success"] = def["success"];
@@ -321,31 +337,37 @@ const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any 
 
 // ── peek — internal implementation ───────────────────────────────────────
 
+const parseExecId = (execId: string) => {
+  const firstSep = execId.indexOf("\x00");
+  const secondSep = firstSep >= 0 ? execId.indexOf("\x00", firstSep + 1) : -1;
+  return {
+    entityId: firstSep >= 0 ? execId.slice(0, firstSep) : execId,
+    tag:
+      secondSep >= 0
+        ? execId.slice(firstSep + 1, secondSep)
+        : firstSep >= 0
+          ? execId.slice(firstSep + 1)
+          : execId,
+    primaryKey: secondSep >= 0 ? execId.slice(secondSep + 1) : execId,
+  };
+};
+
 const peekImpl = (
   actorName: string,
   execId: string,
+  definitions?: OperationDefs,
 ): Effect.Effect<
   PeekResult,
   PersistenceError | MalformedMessage,
   MessageStorage.MessageStorage | Sharding.Sharding
 > => {
-  // ExecId format: "entityId:tag:primaryKey"
-  const firstSep = execId.indexOf(":");
-  const secondSep = firstSep >= 0 ? execId.indexOf(":", firstSep + 1) : -1;
-  const rawEntityId = firstSep >= 0 ? execId.slice(0, firstSep) : execId;
-  const operationTag =
-    secondSep >= 0
-      ? execId.slice(firstSep + 1, secondSep)
-      : firstSep >= 0
-        ? execId.slice(firstSep + 1)
-        : execId;
-  const primaryKey = secondSep >= 0 ? execId.slice(secondSep + 1) : rawEntityId;
+  const parsed = parseExecId(execId);
 
   return Effect.gen(function* () {
     const sharding = yield* Sharding.Sharding;
     const storage = yield* MessageStorage.MessageStorage;
 
-    const entityId = EntityId.make(rawEntityId);
+    const entityId = EntityId.make(parsed.entityId);
     const entityType = EntityType.make(actorName);
     const shardId = sharding.getShardId(entityId, entityType);
 
@@ -357,8 +379,8 @@ const peekImpl = (
 
     const maybeRequestId = yield* storage.requestIdForPrimaryKey({
       address,
-      tag: operationTag,
-      id: primaryKey,
+      tag: parsed.tag,
+      id: parsed.primaryKey,
     });
 
     if (Option.isNone(maybeRequestId)) {
@@ -372,26 +394,56 @@ const peekImpl = (
       return Pending as PeekResult;
     }
 
-    return mapExitToPeekResult(last.exit);
+    const def = definitions?.[parsed.tag];
+    return yield* mapExitToPeekResult(last.exit, def);
   });
 };
 
-const mapExitToPeekResult = (exit: RpcMessage.ExitEncoded<unknown, unknown>): PeekResult => {
+const decodeValue = (schema: Schema.Top | undefined, value: unknown): Effect.Effect<unknown> => {
+  if (!schema) return Effect.succeed(value);
+  const decode = Schema.decodeUnknownEffect(schema)(value) as Effect.Effect<unknown, unknown>;
+  return Effect.map(Effect.option(decode), (opt) => (Option.isSome(opt) ? opt.value : value));
+};
+
+const mapExitToPeekResult = (
+  exit: RpcMessage.ExitEncoded<unknown, unknown>,
+  def?: OperationDef,
+): Effect.Effect<PeekResult> => {
   if (exit._tag === "Success") {
-    return Success(exit.value);
+    return Effect.map(decodeValue(def?.success, exit.value), Success);
   }
 
   const cause = exit.cause[0];
-  if (!cause) return Pending;
+  if (!cause) return Effect.succeed(Pending);
 
   switch (cause._tag) {
     case "Fail":
-      return Failure(cause.error);
+      return Effect.map(decodeValue(def?.error, cause.error), Failure);
     case "Die":
-      return Defect(cause.defect);
+      return Effect.succeed(Defect(cause.defect));
     case "Interrupt":
-      return Interrupted;
+      return Effect.succeed(Interrupted);
+    default:
+      return Effect.succeed(Pending);
   }
+};
+
+// Workflow poll returns a real Exit.Exit, not encoded — walk Cause tree
+const mapExitToWorkflowPeekResult = (exit: Exit.Exit<unknown, unknown>): PeekResult => {
+  if (Exit.isSuccess(exit)) {
+    return Success(exit.value);
+  }
+  const cause = exit.cause;
+  const errorOpt = Cause.findErrorOption(cause);
+  if (Option.isSome(errorOpt)) return Failure(errorOpt.value);
+
+  const defectResult = Cause.findDefect(cause);
+  if (defectResult._tag === "Success") return Defect(defectResult.success);
+
+  const interruptResult = Cause.findInterrupt(cause);
+  if (interruptResult._tag === "Success") return Interrupted;
+
+  return Pending;
 };
 
 // ── watch — internal implementation ──────────────────────────────────────
@@ -399,6 +451,7 @@ const mapExitToPeekResult = (exit: RpcMessage.ExitEncoded<unknown, unknown>): Pe
 const watchImpl = (
   actorName: string,
   execId: string,
+  definitions?: OperationDefs,
   options?: { readonly interval?: Duration.Input },
 ): Stream.Stream<
   PeekResult,
@@ -406,10 +459,10 @@ const watchImpl = (
   MessageStorage.MessageStorage | Sharding.Sharding
 > => {
   const interval = options?.interval ?? Duration.millis(200);
-  return Stream.fromEffectSchedule(peekImpl(actorName, execId), Schedule.spaced(interval)).pipe(
-    Stream.changesWith(peekResultEquals),
-    Stream.takeUntil(isTerminal),
-  );
+  return Stream.fromEffectSchedule(
+    peekImpl(actorName, execId, definitions),
+    Schedule.spaced(interval),
+  ).pipe(Stream.changesWith(peekResultEquals), Stream.takeUntil(isTerminal));
 };
 
 const peekResultEquals = (a: PeekResult, b: PeekResult): boolean => {
@@ -468,28 +521,25 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
     });
 
   const peekFn = <S, E>(execId: ExecId<S, E>) =>
-    peekImpl(name, execId) as Effect.Effect<
+    peekImpl(name, execId, definitions) as Effect.Effect<
       PeekResult<S, E>,
       PersistenceError | MalformedMessage,
       MessageStorage.MessageStorage | Sharding.Sharding
     >;
 
   const watchFn = <S, E>(execId: ExecId<S, E>, options?: { readonly interval?: Duration.Input }) =>
-    watchImpl(name, execId, options) as Stream.Stream<
+    watchImpl(name, execId, definitions, options) as Stream.Stream<
       PeekResult<S, E>,
       PersistenceError | MalformedMessage,
       MessageStorage.MessageStorage | Sharding.Sharding
     >;
 
-  const interruptFn = (entityId: string) =>
-    Effect.gen(function* () {
-      const sharding = yield* Sharding.Sharding;
-      yield* (
-        sharding as unknown as {
-          passivate: (entityType: string, entityId: string) => Effect.Effect<void>;
-        }
-      ).passivate(name, entityId);
-    });
+  const interruptFn = (_entityId: string) =>
+    Effect.die(
+      new Error(
+        `effect-encore: entity interrupt for "${name}" is not supported — Sharding.passivate is not a public API`,
+      ),
+    );
 
   const actor = {
     _tag: "ActorObject" as const,
@@ -681,21 +731,27 @@ const buildActorRef = <Name extends string, Defs extends OperationDefs>(
     call: (op: { readonly _tag: string; readonly [key: string]: unknown }) => {
       const tag = op["_tag"];
       const fn = client[tag];
+      if (!fn)
+        return Effect.die(
+          new Error(`effect-encore: unknown operation "${tag}" on actor "${_actorName}"`),
+        );
       const def = definitions[tag] as OperationDef | undefined;
       const hasPayload = def?.["payload"] !== undefined;
-      return hasPayload ? fn?.(op) : fn?.();
+      return hasPayload ? fn(op) : fn();
     },
     cast: (op: { readonly _tag: string; readonly [key: string]: unknown }) => {
       const tag = op["_tag"];
       const fn = client[tag];
+      if (!fn)
+        return Effect.die(
+          new Error(`effect-encore: unknown operation "${tag}" on actor "${_actorName}"`),
+        );
       const def = definitions[tag] as OperationDef | undefined;
       const hasPayload = def?.["payload"] !== undefined;
-      const discardCall = hasPayload
-        ? fn?.(op, { discard: true })
-        : fn?.(undefined, { discard: true });
+      const discardCall = hasPayload ? fn(op, { discard: true }) : fn(undefined, { discard: true });
       const pkFn = def?.["primaryKey"] as ((p: unknown) => string) | undefined;
       const primaryKey = pkFn ? pkFn(op) : tag;
-      const execId = `${_entityId}:${tag}:${primaryKey}`;
+      const execId = `${_entityId}\x00${tag}\x00${primaryKey}`;
       return Effect.map(discardCall ?? Effect.void, () => makeExecId(execId));
     },
   } as ActorRef<Name, Defs>;
@@ -836,13 +892,11 @@ const fromWorkflow = <
         if (Option.isNone(optResult)) return Pending as PeekResult<S, E>;
         const result = optResult.value as {
           _tag: string;
-          exit?: { _tag: string; value?: unknown; cause?: unknown };
+          exit?: Exit.Exit<unknown, unknown>;
         };
         if (result._tag === "Suspended") return Suspended as PeekResult<S, E>;
-        if (result._tag === "Complete") {
-          const exit = result.exit;
-          if (exit?._tag === "Success") return Success(exit.value) as PeekResult<S, E>;
-          return Failure(exit?.cause) as PeekResult<S, E>;
+        if (result._tag === "Complete" && result.exit) {
+          return mapExitToWorkflowPeekResult(result.exit) as PeekResult<S, E>;
         }
         return Pending as PeekResult<S, E>;
       },
@@ -957,15 +1011,6 @@ const buildWorkflowActorRef = (
 };
 /* eslint-enable typescript-eslint/no-explicit-any */
 
-// ── Public API ─────────────────────────────────────────────────────────────
-
-export const Actor = {
-  fromEntity,
-  fromWorkflow,
-  toLayer,
-  toTestLayer,
-} as const;
-
 // ── Escape hatch: raw Rpc definitions ──────────────────────────────────────
 
 export const fromRpcs = <const Name extends string, const Rpcs extends ReadonlyArray<Rpc.Any>>(
@@ -980,3 +1025,13 @@ export const fromRpcs = <const Name extends string, const Rpcs extends ReadonlyA
   name,
   entity: Entity.make(name, rpcs as unknown as Array<Rpcs[number]>),
 });
+
+// ── Public API ─────────────────────────────────────────────────────────────
+
+export const Actor = {
+  fromEntity,
+  fromWorkflow,
+  fromRpcs,
+  toLayer,
+  toTestLayer,
+} as const;

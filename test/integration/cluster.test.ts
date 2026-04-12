@@ -57,7 +57,7 @@ describe("cluster integration", () => {
       yield* client.Place({ item: "gadget", qty: 1 }, { discard: true });
       yield* Effect.sleep("100 millis");
 
-      const execId = makeExecId("ord-2:Place:gadget-1");
+      const execId = makeExecId("ord-2\x00Place\x00gadget-1");
       const result = yield* OrderActor.peek(execId);
       expect(result._tag).toBe("Success");
       if (result._tag === "Success") {
@@ -73,7 +73,7 @@ describe("cluster integration", () => {
       const makeClient = yield* OrderActor._meta.entity.client;
       const client = makeClient("ord-3");
 
-      const execId = makeExecId("ord-3:Place:slow-1");
+      const execId = makeExecId("ord-3\x00Place\x00slow-1");
       const before = yield* OrderActor.peek(execId);
       expect(before._tag).toBe("Pending");
 
@@ -94,7 +94,7 @@ describe("cluster integration", () => {
 
       yield* client.Cancel({ reason: "test-fail" }).pipe(Effect.option);
 
-      const execId = makeExecId("ord-4:Cancel:test-fail");
+      const execId = makeExecId("ord-4\x00Cancel\x00test-fail");
       const result = yield* OrderActor.peek(execId);
       expect(result._tag).toBe("Failure");
     }).pipe(
@@ -111,7 +111,7 @@ describe("cluster integration", () => {
       yield* client.Place({ item: "dup", qty: 1 }, { discard: true });
       yield* Effect.sleep("100 millis");
 
-      const execId = makeExecId("ord-5:Place:dup-1");
+      const execId = makeExecId("ord-5\x00Place\x00dup-1");
       const result = yield* OrderActor.peek(execId);
       expect(result._tag).toBe("Success");
     }).pipe(

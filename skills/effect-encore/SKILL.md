@@ -250,7 +250,7 @@ type ExecId<Success = unknown, Error = unknown> = string & {
 
 At runtime, just a string. Format:
 
-- Entity: `"entityId:operationTag:primaryKey"` (opaque — don't parse)
+- Entity: `"entityId\0operationTag\0primaryKey"` (null-byte separated — opaque, don't parse)
 - Workflow: upstream `idempotencyKey(payload)` result
 
 ## Peek
