@@ -1,4 +1,4 @@
-import type { Entity as ClusterEntity, ShardingConfig } from "effect/unstable/cluster";
+import type { Entity as ClusterEntity } from "effect/unstable/cluster";
 import {
   ClusterSchema,
   Entity,
@@ -12,6 +12,9 @@ import * as DeliverAt from "effect/unstable/cluster/DeliverAt";
 import type { MalformedMessage, PersistenceError } from "effect/unstable/cluster/ClusterError";
 import type { Rpc, RpcClient, RpcMessage } from "effect/unstable/rpc";
 import { Rpc as RpcMod } from "effect/unstable/rpc";
+import { Workflow as UpstreamWorkflow } from "effect/unstable/workflow";
+import type { WorkflowEngine } from "effect/unstable/workflow/WorkflowEngine";
+import { layerMemory as workflowEngineLayerMemory } from "effect/unstable/workflow/WorkflowEngine";
 import {
   Context,
   Duration,
@@ -29,6 +32,7 @@ import {
   Defect,
   Failure,
   Interrupted,
+  Suspended,
   isTerminal,
   makeExecId,
   Pending,
@@ -533,6 +537,10 @@ function toLayer(
   options?: HandlerOptions,
 ): Layer.Layer<any, any, any> {
   /* eslint-enable typescript-eslint/no-explicit-any */
+  if (isWorkflowActor(actor) && build !== undefined) {
+    return workflowToLayer(actor, build as Function);
+  }
+
   const clientLayer = Layer.effect(
     actor.Context,
     Effect.map(
@@ -566,20 +574,16 @@ function toLayer(
 
 // ── Actor.toTestLayer ─────────────────────────────────────────────────────
 
-const toTestLayer = <
-  Name extends string,
-  Defs extends OperationDefs,
-  Rpcs extends Rpc.Any = DefRpcs<Defs>,
-  RX = never,
->(
-  actor: ActorObject<Name, Defs, Rpcs>,
-  build: ActorHandlers<Defs> | Effect.Effect<ActorHandlers<Defs>, never, RX>,
+/* eslint-disable typescript-eslint/no-explicit-any -- toTestLayer needs dynamic dispatch for workflow */
+const toTestLayer = (
+  actor: any,
+  build: unknown,
   options?: HandlerOptions,
-): Layer.Layer<
-  ActorClientService<Name, Defs>,
-  never,
-  Scope.Scope | ShardingConfig.ShardingConfig | RX | Rpc.MiddlewareClient<Rpcs>
-> => {
+): Layer.Layer<any, any, any> => {
+  if (isWorkflowActor(actor)) {
+    return workflowToTestLayer(actor, build as Function);
+  }
+
   const transformed = transformHandlers(build);
   const handlerLayer = actor._meta.entity.toLayer(transformed as never, {
     spanAttributes: options?.spanAttributes,
@@ -593,19 +597,16 @@ const toTestLayer = <
     Effect.map(
       Entity.makeTestClient(actor._meta.entity, handlerLayer as never),
       (makeClient: Function) =>
-        (entityId: string): Effect.Effect<ActorRef<Name, Defs>> =>
+        (entityId: string): Effect.Effect<any> =>
           Effect.map(
             makeClient(entityId) as Effect.Effect<RpcClient.RpcClient<Rpc.Any, never>>,
             (rpcClient) =>
               buildActorRef(actor._meta.name, entityId, actor._meta.definitions, rpcClient),
           ),
     ),
-  ) as Layer.Layer<
-    ActorClientService<Name, Defs>,
-    never,
-    Scope.Scope | ShardingConfig.ShardingConfig | RX | Rpc.MiddlewareClient<Rpcs>
-  >;
+  );
 };
+/* eslint-enable typescript-eslint/no-explicit-any */
 
 // ── Transform handlers from operation-first to request-first ───────────────
 
@@ -660,10 +661,252 @@ const buildActorRef = <Name extends string, Defs extends OperationDefs>(
   } as ActorRef<Name, Defs>;
 };
 
+// ── Workflow Definition ────────────────────────────────────────────────────
+
+export interface WorkflowDef<
+  Payload extends Schema.Struct.Fields = Schema.Struct.Fields,
+  Success extends Schema.Top = typeof Schema.Void,
+  Error extends Schema.Top = typeof Schema.Never,
+> {
+  readonly payload: Payload;
+  readonly success?: Success;
+  readonly error?: Error;
+  readonly idempotencyKey: (payload: {
+    readonly [K in keyof Payload]: Schema.Schema.Type<
+      Payload[K] extends Schema.Top ? Payload[K] : never
+    >;
+  }) => string;
+}
+
+// ── WorkflowActorObject ───────────────────────────────────────────────────
+
+type WorkflowPayloadType<Payload extends Schema.Struct.Fields> = {
+  readonly [K in keyof Payload]: Schema.Schema.Type<
+    Payload[K] extends Schema.Top ? Payload[K] : never
+  >;
+};
+
+export type WorkflowActorObject<
+  Name extends string,
+  Payload extends Schema.Struct.Fields,
+  Success extends Schema.Top,
+  Error extends Schema.Top,
+> = {
+  readonly _tag: "WorkflowActorObject";
+  readonly _meta: {
+    readonly name: Name;
+    readonly workflow: UpstreamWorkflow.Workflow<Name, Schema.Struct<Payload>, Success, Error>;
+  };
+  readonly Context: Context.Service<
+    ActorClientService<Name, { readonly Run: OperationDef }>,
+    ActorClientFactory<Name, { readonly Run: OperationDef }>
+  >;
+  readonly Run: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => { readonly _tag: "Run" } & WorkflowPayloadType<Payload> &
+    OperationBrand<Name, "Run", Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>;
+  readonly actor: (
+    entityId: string,
+  ) => Effect.Effect<
+    ActorRef<Name, { readonly Run: OperationDef }>,
+    never,
+    ActorClientService<Name, { readonly Run: OperationDef }>
+  >;
+  readonly peek: <S, E>(
+    execId: ExecId<S, E>,
+  ) => Effect.Effect<PeekResult<S, E>, never, WorkflowEngine>;
+  readonly watch: <S, E>(
+    execId: ExecId<S, E>,
+    options?: { readonly interval?: Duration.Input },
+  ) => Stream.Stream<PeekResult<S, E>, never, WorkflowEngine>;
+  readonly interrupt: (executionId: string) => Effect.Effect<void, never, WorkflowEngine>;
+  readonly resume: (executionId: string) => Effect.Effect<void, never, WorkflowEngine>;
+  readonly executionId: (payload: WorkflowPayloadType<Payload>) => Effect.Effect<string>;
+  readonly withCompensation: UpstreamWorkflow.Workflow<
+    Name,
+    Schema.Struct<Payload>,
+    Success,
+    Error
+  >["withCompensation"];
+  readonly $is: (tag: "Run") => (value: unknown) => boolean;
+};
+
+// ── Actor.fromWorkflow ────────────────────────────────────────────────────
+
+const fromWorkflow = <
+  const Name extends string,
+  const Payload extends Schema.Struct.Fields,
+  Success extends Schema.Top = typeof Schema.Void,
+  Error extends Schema.Top = typeof Schema.Never,
+>(
+  name: Name,
+  def: WorkflowDef<Payload, Success, Error>,
+): WorkflowActorObject<Name, Payload, Success, Error> => {
+  const workflowOptions: Record<string, unknown> = {
+    name,
+    payload: def.payload,
+    idempotencyKey: def.idempotencyKey,
+  };
+  if (def.success) workflowOptions["success"] = def.success;
+  if (def.error) workflowOptions["error"] = def.error;
+
+  const wf = (UpstreamWorkflow.make as Function)(workflowOptions) as UpstreamWorkflow.Workflow<
+    Name,
+    Schema.Struct<Payload>,
+    Success,
+    Error
+  >;
+
+  type WfDefs = { readonly Run: OperationDef };
+
+  const contextTag = Context.Service<
+    ActorClientService<Name, WfDefs>,
+    ActorClientFactory<Name, WfDefs>
+  >(`effect-encore/${name}/Client`);
+
+  const Run = (payload: WorkflowPayloadType<Payload>) =>
+    ({ _tag: "Run", ...payload }) as { readonly _tag: "Run" } & WorkflowPayloadType<Payload> &
+      OperationBrand<Name, "Run", Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>;
+
+  const actorFn = (entityId: string) =>
+    Effect.gen(function* () {
+      const factory = yield* contextTag;
+      return yield* factory(entityId);
+    });
+
+  const peekFn = <S, E>(execId: ExecId<S, E>) =>
+    Effect.map(
+      wf.poll(execId) as Effect.Effect<Option.Option<unknown>, never, WorkflowEngine>,
+      (optResult): PeekResult<S, E> => {
+        if (Option.isNone(optResult)) return Pending as PeekResult<S, E>;
+        const result = optResult.value as {
+          _tag: string;
+          exit?: { _tag: string; value?: unknown; cause?: unknown };
+        };
+        if (result._tag === "Suspended") return Suspended as PeekResult<S, E>;
+        if (result._tag === "Complete") {
+          const exit = result.exit;
+          if (exit?._tag === "Success") return Success(exit.value) as PeekResult<S, E>;
+          return Failure(exit?.cause) as PeekResult<S, E>;
+        }
+        return Pending as PeekResult<S, E>;
+      },
+    ) as Effect.Effect<PeekResult<S, E>, never, WorkflowEngine>;
+
+  const watchFn = <S, E>(
+    execId: ExecId<S, E>,
+    options?: { readonly interval?: Duration.Input },
+  ) => {
+    const interval = options?.interval ?? Duration.millis(200);
+    return Stream.fromEffectSchedule(peekFn(execId), Schedule.spaced(interval)).pipe(
+      Stream.changesWith(peekResultEquals as (a: PeekResult<S, E>, b: PeekResult<S, E>) => boolean),
+      Stream.takeUntil(isTerminal as (r: PeekResult<S, E>) => boolean),
+    ) as Stream.Stream<PeekResult<S, E>, never, WorkflowEngine>;
+  };
+
+  const interruptFn = (executionId: string) => wf.interrupt(executionId);
+
+  const resumeFn = (executionId: string) => wf.resume(executionId);
+
+  const executionIdFn = (payload: WorkflowPayloadType<Payload>) => wf.executionId(payload as never);
+
+  const $is =
+    (tag: string) =>
+    (value: unknown): boolean =>
+      value != null &&
+      typeof value === "object" &&
+      "_tag" in value &&
+      (value as Record<string, unknown>)["_tag"] === tag;
+
+  return {
+    _tag: "WorkflowActorObject" as const,
+    _meta: { name, workflow: wf },
+    Context: contextTag,
+    Run,
+    actor: actorFn,
+    peek: peekFn,
+    watch: watchFn,
+    interrupt: interruptFn,
+    resume: resumeFn,
+    executionId: executionIdFn,
+    withCompensation: wf.withCompensation.bind(wf) as WorkflowActorObject<
+      Name,
+      Payload,
+      Success,
+      Error
+    >["withCompensation"],
+    $is,
+  } as WorkflowActorObject<Name, Payload, Success, Error>;
+};
+
+// ── Workflow-aware toLayer/toTestLayer ─────────────────────────────────────
+
+const isWorkflowActor = (
+  actor: unknown,
+): actor is WorkflowActorObject<string, Schema.Struct.Fields, Schema.Top, Schema.Top> =>
+  actor != null &&
+  typeof actor === "object" &&
+  "_tag" in actor &&
+  (actor as Record<string, unknown>)["_tag"] === "WorkflowActorObject";
+
+/* eslint-disable typescript-eslint/no-explicit-any -- workflow toLayer needs dynamic dispatch */
+const workflowToLayer = (
+  actor: WorkflowActorObject<any, any, any, any>,
+  handler: Function,
+): Layer.Layer<any, any, any> => {
+  const wf = actor._meta.workflow;
+  const handlerLayer = wf.toLayer(handler as any);
+
+  const clientLayer = Layer.effect(
+    actor.Context,
+    Effect.succeed((entityId: string) => Effect.succeed(buildWorkflowActorRef(actor, entityId))),
+  );
+
+  return Layer.merge(handlerLayer, clientLayer);
+};
+
+const workflowToTestLayer = (
+  actor: WorkflowActorObject<any, any, any, any>,
+  handler: Function,
+): Layer.Layer<any, any, any> => {
+  const wf = actor._meta.workflow;
+  const handlerLayer = Layer.provide(wf.toLayer(handler as any), workflowEngineLayerMemory);
+
+  const clientLayer = Layer.effect(
+    actor.Context,
+    Effect.succeed((entityId: string) => Effect.succeed(buildWorkflowActorRef(actor, entityId))),
+  );
+
+  return Layer.provideMerge(Layer.merge(clientLayer, workflowEngineLayerMemory), handlerLayer);
+};
+
+const buildWorkflowActorRef = (
+  actor: WorkflowActorObject<any, any, any, any>,
+  _entityId: string,
+): ActorRef<any, any> => {
+  const wf = actor._meta.workflow;
+
+  return {
+    call: (op: { readonly _tag: string; readonly [key: string]: unknown }) => {
+      const { _tag: _, ...payload } = op;
+      return wf.execute(payload as any);
+    },
+    cast: (op: { readonly _tag: string; readonly [key: string]: unknown }) => {
+      const { _tag: _, ...payload } = op;
+      return Effect.map(
+        wf.execute(payload as any, { discard: true }) as Effect.Effect<string>,
+        (execId) => makeExecId(execId),
+      );
+    },
+  } as ActorRef<any, any>;
+};
+/* eslint-enable typescript-eslint/no-explicit-any */
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 export const Actor = {
   fromEntity,
+  fromWorkflow,
   toLayer,
   toTestLayer,
 } as const;

@@ -9,6 +9,8 @@ export type {
   OperationDef,
   OperationDefs,
   HandlerOptions,
+  WorkflowDef,
+  WorkflowActorObject,
 } from "./actor.js";
 export type { ExecId, PeekResult } from "./receipt.js";
 export {
