@@ -1,6 +1,6 @@
 import { describe, test } from "effect-bun-test";
 import { Effect, Schema } from "effect";
-import type { Duration, Stream } from "effect";
+import type { Cause, Duration, Stream } from "effect";
 import { Actor } from "../src/index.js";
 import type { ExecId, PeekResult } from "../src/index.js";
 
@@ -138,5 +138,61 @@ describe("type-level tests", () => {
   test("withProtocol preserves Name and Defs — data-first", () => {
     const _direct = Actor.withProtocol(Order, (protocol) => protocol);
     void _direct;
+  });
+});
+
+// ── Workflow Step DSL type tests ─────────────────────────────────────────
+
+const FailableWorkflow = Actor.fromWorkflow("Failable", {
+  payload: { id: Schema.String },
+  success: Schema.String,
+  error: OrderError,
+  idempotencyKey: (p: { id: string }) => p.id,
+});
+
+describe("step DSL type-level tests", () => {
+  test("shorthand step.run rejects failable effects (E != never)", () => {
+    const _check = Actor.toTestLayer(FailableWorkflow, (_payload, step) =>
+      Effect.gen(function* () {
+        // @ts-expect-error — shorthand requires E = never, failable effects must use full options
+        yield* step.run("bad", Effect.fail(new OrderError({ message: "boom" })));
+        return "ok";
+      }),
+    );
+    void _check;
+  });
+
+  test("shorthand 3-arg undo cause is typed to WorkflowError", () => {
+    const _check = Actor.toTestLayer(FailableWorkflow, (_payload, step) =>
+      Effect.gen(function* () {
+        yield* step.run("typed-undo", Effect.succeed("ok"), (_value, cause) => {
+          // cause should be Cause<OrderError>, not Cause<unknown>
+          const _typed: Cause.Cause<OrderError> = cause;
+          void _typed;
+          return Effect.void;
+        });
+        return "ok";
+      }),
+    );
+    void _check;
+  });
+
+  test("full options undo cause is typed to WorkflowError", () => {
+    const _check = Actor.toTestLayer(FailableWorkflow, (_payload, step) =>
+      Effect.gen(function* () {
+        yield* step.run("typed-full-undo", {
+          do: Effect.succeed("ok"),
+          success: Schema.String,
+          undo: (_value, cause) => {
+            // cause should be Cause<OrderError>, not Cause<unknown>
+            const _typed: Cause.Cause<OrderError> = cause;
+            void _typed;
+            return Effect.void;
+          },
+        });
+        return "ok";
+      }),
+    );
+    void _check;
   });
 });

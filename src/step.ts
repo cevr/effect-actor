@@ -314,7 +314,7 @@ export const makeStepContext = <
       const activities = steps.map((s) =>
         UpstreamActivity.make({
           name: `${id}/${s.name}`,
-          success: s.success,
+          success: s.success ?? Schema.Unknown,
           error: s.error,
           execute: s.execute,
         }),

@@ -1,5 +1,5 @@
 import { describe, expect, it, test } from "effect-bun-test";
-import { Effect, Exit, Schema } from "effect";
+import { Effect, Exit, Schedule, Schema } from "effect";
 import { Actor } from "../src/index.js";
 
 // ── Basic workflow with step.run shorthand ─────────────────────────────
@@ -284,4 +284,102 @@ describe("signal()", () => {
     expect(sig.tokenFromExecutionId).toBeDefined();
     expect(sig.tokenFromPayload).toBeDefined();
   });
+});
+
+// ── Signal round-trip inside workflow ─────────────────────────────────
+
+const SignalWorkflow = Actor.fromWorkflow("SignalWorkflow", {
+  payload: { id: Schema.String },
+  success: Schema.String,
+  idempotencyKey: (p: { id: string }) => p.id,
+});
+
+const SignalTest = Actor.toTestLayer(SignalWorkflow, (_payload, step) =>
+  Effect.gen(function* () {
+    const approval = step.signal({ name: "approval", success: Schema.String });
+    const token = yield* approval.token;
+    // Resolve immediately from inside the handler for testing
+    yield* approval.succeed({ token, value: "approved" });
+    const result = yield* approval.await;
+    return `got: ${result}`;
+  }),
+);
+
+describe("step.signal — inside handler", () => {
+  it.scopedLive.layer(SignalTest)("signal token + succeed + await round-trip", () =>
+    Effect.gen(function* () {
+      const ref = yield* SignalWorkflow.actor();
+      const result = yield* ref.execute(SignalWorkflow.Run({ id: "sig-1" }));
+      expect(result).toBe("got: approved");
+    }),
+  );
+});
+
+// ── step.race ─────────────────────────────────────────────────────────
+
+const RaceWorkflow = Actor.fromWorkflow("RaceWorkflow", {
+  payload: { id: Schema.String },
+  success: Schema.String,
+  idempotencyKey: (p: { id: string }) => p.id,
+});
+
+const RaceTest = Actor.toTestLayer(RaceWorkflow, (_payload, step) =>
+  Effect.gen(function* () {
+    const winner = yield* step.race("pick-fastest", [
+      { name: "fast", execute: Effect.succeed("fast-wins") },
+      { name: "slow", execute: Effect.delay(Effect.succeed("slow-wins"), "1 second") },
+    ]);
+    return winner;
+  }),
+);
+
+describe("step.race", () => {
+  it.scopedLive.layer(RaceTest)("first to complete wins", () =>
+    Effect.gen(function* () {
+      const ref = yield* RaceWorkflow.actor();
+      const result = yield* ref.execute(RaceWorkflow.Run({ id: "race-1" }));
+      expect(result).toBe("fast-wins");
+    }),
+  );
+});
+
+// ── waitFor with custom filter/schedule ───────────────────────────────
+
+describe("waitFor — custom options", () => {
+  it.scopedLive.layer(WaitTargetTest)("waitFor with custom filter and schedule", () =>
+    Effect.gen(function* () {
+      const ref = yield* WaitTarget.actor();
+      const execId = yield* ref.send(WaitTarget.Run({ id: "w-custom" }));
+      const result = yield* WaitTarget.waitFor(execId, {
+        filter: (r) => r._tag === "Success",
+        schedule: Schedule.spaced("50 millis"),
+      });
+      expect(result._tag).toBe("Success");
+    }),
+  );
+});
+
+// ── step.executionId ──────────────────────────────────────────────────
+
+const IdKeyWorkflow = Actor.fromWorkflow("IdKeyWorkflow", {
+  payload: { id: Schema.String },
+  success: Schema.String,
+  idempotencyKey: (p: { id: string }) => p.id,
+});
+
+const IdKeyTest = Actor.toTestLayer(IdKeyWorkflow, (_payload, step) =>
+  Effect.gen(function* () {
+    const key = yield* step.idempotencyKey("my-step");
+    return `key=${key}`;
+  }),
+);
+
+describe("step.idempotencyKey", () => {
+  it.scopedLive.layer(IdKeyTest)("generates key from executionId + name", () =>
+    Effect.gen(function* () {
+      const ref = yield* IdKeyWorkflow.actor();
+      const result = yield* ref.execute(IdKeyWorkflow.Run({ id: "idem-1" }));
+      expect(result).toContain("/my-step");
+    }),
+  );
 });

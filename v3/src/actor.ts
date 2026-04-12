@@ -89,6 +89,8 @@ const RESERVED_KEYS = new Set<string>([
   "actor",
   "peek",
   "watch",
+  "waitFor",
+  "signal",
   "interrupt",
   "executionId",
   "pipe",
