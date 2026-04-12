@@ -44,6 +44,14 @@ import {
   Success,
 } from "./receipt.js";
 
+// ── Layer passthrough polyfill ─────────────────────────────────────────────
+// Layer.passthrough was removed in Effect 3.x. Polyfill it so input services
+// appear in the output — same semantics as the original.
+const layerPassthrough = <ROut, E, RIn>(
+  layer: Layer.Layer<ROut, E, RIn>,
+): Layer.Layer<ROut | RIn, E, RIn> =>
+  Layer.merge(Layer.effectContext(Effect.context<RIn>()), layer);
+
 // ── Payload classification ─────────────────────────────────────────────────
 // Schema.Class has `fields`; scalars like Schema.String don't.
 const isOpaquePayload = (payload: unknown): boolean =>
@@ -776,7 +784,7 @@ function toLayer(
     mailboxCapacity: options?.mailboxCapacity,
   });
 
-  return Layer.merge(handlerLayer, clientLayer).pipe(Layer.passthrough);
+  return layerPassthrough(Layer.merge(handlerLayer, clientLayer));
 }
 
 // ── Actor.toTestLayer ─────────────────────────────────────────────────────
@@ -1203,7 +1211,7 @@ const workflowToLayer = (
   // handlerLayer requires WorkflowEngine and registers the workflow.
   // clientLayer has no requirements but ref.execute/send need WorkflowEngine at runtime.
   // Use passthrough so WorkflowEngine stays in the output for program code.
-  return Layer.merge(handlerLayer, clientLayer).pipe(Layer.passthrough);
+  return layerPassthrough(Layer.merge(handlerLayer, clientLayer));
 };
 
 const workflowToTestLayer = (
