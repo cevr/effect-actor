@@ -86,6 +86,7 @@ Counter.GetCount(); // zero-input, still callable
 | `Counter.interrupt(id)`     | Method          | Passivate entity (dies — not public API)         |
 | `Counter.flush(id)`         | Method          | Delete all messages + replies (entity-only)      |
 | `Counter.redeliver(id)`     | Method          | Clear read leases for reprocessing (entity-only) |
+| `Counter.of(handlers)`      | Identity fn     | Type-safe handler construction (no redeclaring)  |
 | `Counter.$is(tag)`          | Type guard      | `Counter.$is("Increment")(value)`                |
 
 ### Type guards
@@ -105,7 +106,7 @@ ProcessOrder.type; // "Workflow/ProcessOrder"
 
 ### Reserved operation names
 
-`_tag`, `_meta`, `$is`, `Context`, `actor`, `name`, `type`, `peek`, `watch`, `interrupt`, `executionId`, `flush`, `redeliver` — compile-time type guard + runtime check.
+`_tag`, `_meta`, `$is`, `Context`, `actor`, `name`, `type`, `of`, `peek`, `watch`, `interrupt`, `executionId`, `flush`, `redeliver` — compile-time type guard + runtime check.
 
 ### Pre-built Schema.Class payload
 
@@ -325,18 +326,20 @@ const CounterLive = Actor.toLayer(Counter, {
   GetCount: () => Effect.succeed(42),
 });
 
-// From Effect context (yield services)
+// From Effect context (yield services) — use .of for type-safe handlers
 const CounterLive = Actor.toLayer(
   Counter,
   Effect.gen(function* () {
     const db = yield* Database;
-    return {
+    return Counter.of({
       Increment: ({ operation }) => db.increment(operation.amount),
       GetCount: () => db.getCount(),
-    };
+    });
   }),
 );
 ```
+
+`.of` is a typed identity function — it infers handler types from the actor's operation defs so you never need to manually annotate `{ operation: { amount: number } }`. Especially useful when yielding services in `Effect.gen` where TS can't infer the return type from `Actor.toLayer`.
 
 ### Workflow handler — Actor.toLayer
 

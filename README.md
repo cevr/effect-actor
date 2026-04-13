@@ -65,6 +65,9 @@ ProcessOrder.type; // "Workflow/ProcessOrder"
 // Type guards
 Actor.isEntity(Order); // true — narrows to EntityActor
 Actor.isWorkflow(ProcessOrder); // true — narrows to WorkflowActor
+
+// .of — typed identity for handler construction
+Order.of({ Place: ..., Cancel: ... }); // infers handler types from defs
 ```
 
 ### Unified Call Site
@@ -117,6 +120,18 @@ const OrderLive = Actor.toLayer(Order, {
   Place: ({ operation }) => Effect.succeed(`order: ${operation.item} x${operation.qty}`),
   Cancel: ({ operation }) => cancelOrder(operation.reason),
 });
+
+// Use .of for type-safe handlers when yielding services in Effect.gen
+const OrderLive = Actor.toLayer(
+  Order,
+  Effect.gen(function* () {
+    const db = yield* Database;
+    return Order.of({
+      Place: ({ operation }) => db.placeOrder(operation.item, operation.qty),
+      Cancel: ({ operation }) => db.cancelOrder(operation.reason),
+    });
+  }),
+);
 ```
 
 ### Handle — Workflow (Step DSL)

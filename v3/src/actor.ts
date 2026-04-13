@@ -80,6 +80,7 @@ type ReservedKeys =
   | "actor"
   | "name"
   | "type"
+  | "of"
   | "peek"
   | "watch"
   | "waitFor"
@@ -100,6 +101,7 @@ const RESERVED_KEYS = new Set<string>([
   "actor",
   "name",
   "type",
+  "of",
   "peek",
   "watch",
   "waitFor",
@@ -337,6 +339,7 @@ export type EntityActor<
     readonly redeliver: (
       actorId: string,
     ) => Effect.Effect<void, PersistenceError, MessageStorage.MessageStorage | Sharding.Sharding>;
+    readonly of: (handlers: ActorHandlers<Defs>) => ActorHandlers<Defs>;
     readonly $is: <Tag extends keyof Defs & string>(
       tag: Tag,
     ) => (value: unknown) => value is OperationValue<Name, Tag, Defs[Tag]>;
@@ -730,12 +733,15 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
       ),
     );
 
+  const ofFn = <T>(handlers: T): T => handlers;
+
   const actor = Object.assign(Object.create(Pipeable.Prototype), {
     _tag: "EntityActor" as const,
     name,
     type: name,
     _meta: { name, definitions, entity },
     Context: contextTag,
+    of: ofFn,
     actor: actorFn,
     peek: peekFn,
     watch: watchFn,
@@ -989,6 +995,7 @@ const WORKFLOW_RESERVED_KEYS = new Set<string>([
   "actor",
   "name",
   "type",
+  "of",
   "Run",
   "peek",
   "watch",
