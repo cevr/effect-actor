@@ -1,5 +1,14 @@
 # effect-encore
 
+## 0.6.1
+
+### Patch Changes
+
+- [`ec76eb0`](https://github.com/cevr/effect-encore/commit/ec76eb08fb52a48acd09540bbcbd946a4f558194) Thanks [@cevr](https://github.com/cevr)! - Add `.of` typed identity method on `EntityActor` for type-safe handler construction.
+  - `actor.of(handlers)` — returns handlers unchanged but infers types from the actor's operation defs
+  - Eliminates manual type annotations when building handlers inside `Effect.gen`
+  - Added `"of"` to reserved operation/signal names
+
 ## 0.6.0
 
 ### Minor Changes
