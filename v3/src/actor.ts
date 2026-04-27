@@ -4,6 +4,7 @@ import {
   Entity,
   EntityAddress,
   EntityId,
+  EntityType,
   MessageStorage,
   Sharding,
 } from "@effect/cluster";
@@ -720,13 +721,21 @@ const makeWaitFor = <S, E>(
     readonly schedule?: Schedule.Schedule<any, unknown>;
   },
 ): Effect.Effect<PeekResult<S, E>, any, any> => {
+  // v3's `Effect.repeat({ schedule, while })` returns the schedule's Out, not
+  // the effect's value. Use Stream-driven polling so we can both pace AND
+  // return the last terminal result.
   const filter = options?.filter ?? (isTerminal as (r: PeekResult<S, E>) => boolean);
   const sched = options?.schedule ?? defaultWaitSchedule;
-  return peekFn(execId).pipe(
-    Effect.repeat({
-      schedule: sched as Schedule.Schedule<any, PeekResult<S, E>>,
-      while: (result) => !filter(result),
-    }),
+  return Stream.repeatEffectWithSchedule(peekFn(execId), sched).pipe(
+    Stream.takeUntil(filter as (r: PeekResult<S, E>) => boolean),
+    Stream.runLast,
+    Effect.flatMap((opt) =>
+      // Stream guarantees at least one element since repeatEffectWithSchedule
+      // emits the first peek immediately. takeUntil keeps the matching item.
+      opt._tag === "Some"
+        ? Effect.succeed(opt.value)
+        : Effect.dieMessage("waitFor: stream produced no values (unreachable)"),
+    ),
   );
 };
 
@@ -1130,14 +1139,16 @@ const WORKFLOW_RESERVED_KEYS = new Set<string>([
   "_meta",
   "$is",
   "Context",
-  "ref",
   "name",
   "type",
   "of",
-  "Run",
+  "execute",
+  "send",
   "peek",
   "watch",
   "waitFor",
+  "rerun",
+  "make",
   "interrupt",
   "resume",
   "executionId",
@@ -1220,37 +1231,116 @@ export type WorkflowActor<
     ActorClientService<Name, WorkflowRunDefs<Payload, Success, Error>>,
     ActorClientFactory<Name, WorkflowRunDefs<Payload, Success, Error>>
   >;
-  readonly Run: (
+  /**
+   * Run the workflow for the given payload, awaiting its terminal result.
+   * Idempotent on `payload` — same payload yields same execution.
+   */
+  readonly execute: (
     payload: WorkflowPayloadType<Payload>,
-  ) => { readonly _tag: "Run" } & WorkflowPayloadType<Payload> &
-    OperationBrand<Name, "Run", Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>;
-  readonly ref: () => Effect.Effect<
-    ActorRef<Name, WorkflowRunDefs<Payload, Success, Error>>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<Success>,
+    Schema.Schema.Type<Error>,
+    ActorClientService<Name, WorkflowRunDefs<Payload, Success, Error>>
+  >;
+  /**
+   * Fire-and-forget: enqueues the workflow run and returns its `ExecId`.
+   */
+  readonly send: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => Effect.Effect<
+    ExecId<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>,
     never,
     ActorClientService<Name, WorkflowRunDefs<Payload, Success, Error>>
   >;
-  readonly peek: <S, E>(
-    execId: ExecId<S, E>,
-  ) => Effect.Effect<PeekResult<S, E>, never, WorkflowEngine>;
-  readonly watch: <S, E>(
-    execId: ExecId<S, E>,
-    options?: { readonly interval?: Duration.DurationInput },
-  ) => Stream.Stream<PeekResult<S, E>, never, WorkflowEngine>;
-  readonly waitFor: <S, E>(
-    execId: ExecId<S, E>,
-    options?: {
-      readonly filter?: (result: PeekResult<S, E>) => boolean;
-      // eslint-disable-next-line typescript-eslint/no-explicit-any
-      readonly schedule?: Schedule.Schedule<any, unknown>;
-    },
-  ) => Effect.Effect<PeekResult<S, E>, never, WorkflowEngine>;
-  readonly interrupt: (executionId: string) => Effect.Effect<void, never, WorkflowEngine>;
-  readonly resume: (executionId: string) => Effect.Effect<void, never, WorkflowEngine>;
+  /**
+   * Pure derivation: compute the `ExecId` for a payload without enqueuing.
+   */
   readonly executionId: (
     payload: WorkflowPayloadType<Payload>,
   ) => Effect.Effect<ExecId<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>>;
+  readonly peek: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => Effect.Effect<
+    PeekResult<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>,
+    never,
+    WorkflowEngine
+  >;
+  readonly watch: (
+    payload: WorkflowPayloadType<Payload>,
+    options?: { readonly interval?: Duration.DurationInput },
+  ) => Stream.Stream<
+    PeekResult<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>,
+    never,
+    WorkflowEngine
+  >;
+  readonly waitFor: (
+    payload: WorkflowPayloadType<Payload>,
+    options?: {
+      readonly filter?: (
+        result: PeekResult<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>,
+      ) => boolean;
+      // eslint-disable-next-line typescript-eslint/no-explicit-any
+      readonly schedule?: Schedule.Schedule<any, unknown>;
+    },
+  ) => Effect.Effect<
+    PeekResult<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>,
+    never,
+    WorkflowEngine
+  >;
+  /**
+   * Surgically clear this execution's cached run reply + activity replies so
+   * the next `.execute(samePayload)` runs from scratch.
+   *
+   * Composes `WorkflowEngine.interrupt` (signals the running fiber, no-op if
+   * completed) with `EncoreMessageStorage.clearAddress` (wipes run reply +
+   * cached activity replies stored at the workflow's `EntityAddress`).
+   *
+   * Caveat: rerun-while-running interrupts the fiber and clears state, but
+   * cleanup is best-effort eventual — the next `.execute(samePayload)` may
+   * queue behind the interrupted fiber's wind-down. No data corruption, just
+   * transient ordering.
+   */
+  readonly rerun: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => Effect.Effect<
+    void,
+    PersistenceError,
+    EncoreMessageStorageShape | Sharding.Sharding | WorkflowEngine
+  >;
+  readonly interrupt: (executionId: string) => Effect.Effect<void, never, WorkflowEngine>;
+  readonly resume: (executionId: string) => Effect.Effect<void, never, WorkflowEngine>;
+  /**
+   * Escape hatch: produce the underlying `OperationValue<"Run", ...>` for the
+   * payload. Useful for external code that needs to round-trip the value
+   * (e.g., admin UIs replaying a captured payload).
+   */
+  readonly make: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => { readonly _tag: "Run" } & WorkflowPayloadType<Payload> &
+    OperationBrand<Name, "Run", Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>;
   readonly $is: (tag: "Run") => (value: unknown) => boolean;
 };
+
+// ── Workflow address resolver ─────────────────────────────────────────────
+// Mirror of upstream `ClusterWorkflowEngine.entityAddressFor`. Both run reply
+// and cached activity replies live at this address — `clearAddress` wipes all.
+/* eslint-disable typescript-eslint/no-explicit-any -- workflow type erased */
+const resolveWorkflowAddress = (
+  workflow: UpstreamWorkflow.Workflow<any, any, any, any>,
+  executionId: string,
+) =>
+  Effect.gen(function* () {
+    const sharding = yield* Sharding.Sharding;
+    const entityId = EntityId.make(executionId);
+    const shardGroupFn = Context.get(workflow.annotations, ClusterSchema.ShardGroup);
+    const shardGroup = shardGroupFn(entityId);
+    return EntityAddress.make({
+      entityType: EntityType.EntityType.make(`Workflow/${workflow.name}`),
+      entityId,
+      shardId: sharding.getShardId(entityId, shardGroup),
+    });
+  });
+/* eslint-enable typescript-eslint/no-explicit-any */
 
 // ── Actor.fromWorkflow ────────────────────────────────────────────────────
 
@@ -1293,11 +1383,9 @@ const fromWorkflow = <
     ActorClientFactory<Name, WfDefs>
   >(`effect-encore/${name}/Client`);
 
-  const Run = (payload: WorkflowPayloadType<Payload>) =>
+  const make = (payload: WorkflowPayloadType<Payload>) =>
     ({ _tag: "Run", ...payload }) as { readonly _tag: "Run" } & WorkflowPayloadType<Payload> &
       OperationBrand<Name, "Run", Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>;
-
-  const actorFn = () => Effect.flatMap(contextTag, (factory) => factory(""));
 
   // Build declarative signals
   /* eslint-disable typescript-eslint/no-explicit-any -- signal types are erased at runtime */
@@ -1316,33 +1404,119 @@ const fromWorkflow = <
     });
   }
 
-  const peekFn = <S, E>(execId: ExecId<S, E>) =>
+  // Compute the workflow's actual executionId for a payload. Upstream derives
+  // execId as `hash(name-idempotencyKey(payload))` (Workflow.js makeExecutionId);
+  // peek/rerun MUST use that same id or they'll look at the wrong slot.
+  const execIdFor = (payload: WorkflowPayloadType<Payload>): Effect.Effect<string> =>
+    wf.executionId(payload as never);
+
+  type RawPeek = PeekResult<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>;
+
+  const peekById = (executionId: string): Effect.Effect<RawPeek, never, WorkflowEngine> =>
     Effect.map(
-      wf.poll(execId) as Effect.Effect<unknown, never, WorkflowEngine>,
-      (pollResult): PeekResult<S, E> => {
-        if (pollResult == null) return Pending as PeekResult<S, E>;
+      wf.poll(executionId) as Effect.Effect<unknown, never, WorkflowEngine>,
+      (pollResult): RawPeek => {
+        if (pollResult == null) return Pending as RawPeek;
         const result = pollResult as {
           _tag: string;
           exit?: Exit.Exit<unknown, unknown>;
         };
-        if (result._tag === "Suspended") return Suspended as PeekResult<S, E>;
+        if (result._tag === "Suspended") return Suspended as RawPeek;
         if (result._tag === "Complete" && result.exit) {
-          return mapExitToWorkflowPeekResult(result.exit) as PeekResult<S, E>;
+          return mapExitToWorkflowPeekResult(result.exit) as RawPeek;
         }
-        return Pending as PeekResult<S, E>;
+        return Pending as RawPeek;
       },
-    ) as Effect.Effect<PeekResult<S, E>, never, WorkflowEngine>;
+    );
 
-  const watchFn = <S, E>(
-    execId: ExecId<S, E>,
+  const peekFn = (payload: WorkflowPayloadType<Payload>) =>
+    Effect.flatMap(execIdFor(payload), peekById);
+
+  const watchFn = (
+    payload: WorkflowPayloadType<Payload>,
     options?: { readonly interval?: Duration.DurationInput },
-  ) => {
+  ): Stream.Stream<RawPeek, never, WorkflowEngine> => {
     const interval = options?.interval ?? Duration.millis(200);
-    return Stream.repeatEffectWithSchedule(peekFn(execId), Schedule.spaced(interval)).pipe(
-      Stream.changesWith(peekResultEquals as (a: PeekResult<S, E>, b: PeekResult<S, E>) => boolean),
-      Stream.takeUntil(isTerminal as (r: PeekResult<S, E>) => boolean),
-    ) as Stream.Stream<PeekResult<S, E>, never, WorkflowEngine>;
+    return Stream.unwrap(
+      Effect.map(execIdFor(payload), (executionId) =>
+        Stream.repeatEffectWithSchedule(peekById(executionId), Schedule.spaced(interval)).pipe(
+          Stream.changesWith(peekResultEquals as (a: RawPeek, b: RawPeek) => boolean),
+          Stream.takeUntil(isTerminal as (r: RawPeek) => boolean),
+        ),
+      ),
+    );
   };
+
+  const waitForFn = (
+    payload: WorkflowPayloadType<Payload>,
+    options?: {
+      readonly filter?: (result: RawPeek) => boolean;
+      // eslint-disable-next-line typescript-eslint/no-explicit-any
+      readonly schedule?: Schedule.Schedule<any, unknown>;
+    },
+  ): Effect.Effect<RawPeek, never, WorkflowEngine> =>
+    Effect.flatMap(
+      execIdFor(payload),
+      (executionId) =>
+        makeWaitFor(
+          (eid) => peekById(eid as unknown as string),
+          makeExecId(executionId) as ExecId<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>,
+          options as never,
+        ) as Effect.Effect<RawPeek, never, WorkflowEngine>,
+    );
+
+  const interruptFn = (executionId: string) => wf.interrupt(executionId);
+
+  const resumeFn = (executionId: string) => wf.resume(executionId);
+
+  const executionIdFn = (payload: WorkflowPayloadType<Payload>) =>
+    Effect.map(wf.executionId(payload as never), (id) => makeExecId(id));
+
+  // rerun(payload): WorkflowEngine.interrupt + clearAddress on the workflow's
+  // EntityAddress. Wipes both the run reply AND every cached activity reply
+  // (they all live at the same address — the upstream
+  // `ClusterWorkflowEngine.entityAddressFor` is what we mirror here). interrupt
+  // is a fiber signal and is a no-op if the workflow has already completed;
+  // clearAddress() then wipes persisted state regardless.
+  // Caveat: rerun-while-running interrupts the fiber and clears state, but the
+  // fiber's wind-down may queue behind the next execute; cleanup is best-effort
+  // eventual.
+  const rerunFn = (
+    payload: WorkflowPayloadType<Payload>,
+  ): Effect.Effect<
+    void,
+    PersistenceError,
+    EncoreMessageStorageShape | Sharding.Sharding | WorkflowEngine
+  > =>
+    Effect.gen(function* () {
+      const executionId = yield* execIdFor(payload);
+      yield* wf.interrupt(executionId);
+      const storage = yield* EncoreMessageStorage;
+      const address = yield* resolveWorkflowAddress(wf, executionId);
+      yield* storage.clearAddress(address);
+    });
+
+  const executeFn = (payload: WorkflowPayloadType<Payload>) =>
+    Effect.flatMap(execIdFor(payload), (executionId) =>
+      Effect.flatMap(contextTag, (factory) =>
+        Effect.flatMap(factory(executionId), (ref) => ref.execute(make(payload) as never)),
+      ),
+    ) as Effect.Effect<
+      Schema.Schema.Type<Success>,
+      Schema.Schema.Type<Error>,
+      ActorClientService<Name, WfDefs>
+    >;
+
+  const sendFn = (payload: WorkflowPayloadType<Payload>) =>
+    Effect.flatMap(execIdFor(payload), (executionId) =>
+      Effect.flatMap(contextTag, (factory) =>
+        Effect.flatMap(factory(executionId), (ref) => ref.send(make(payload) as never)),
+      ),
+    ) as Effect.Effect<
+      ExecId<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>,
+      never,
+      ActorClientService<Name, WfDefs>
+    >;
 
   const $is =
     (tag: string) =>
@@ -1359,29 +1533,18 @@ const fromWorkflow = <
     type: `Workflow/${name}` as const,
     _meta: { name, workflow: wf },
     Context: contextTag,
-    Run,
-    ref: actorFn,
+    execute: executeFn,
+    send: sendFn,
+    executionId: executionIdFn,
     peek: peekFn,
     watch: watchFn,
-    waitFor: <S, E>(
-      execId: ExecId<S, E>,
-      options?: {
-        readonly filter?: (result: PeekResult<S, E>) => boolean;
-        // eslint-disable-next-line typescript-eslint/no-explicit-any
-        readonly schedule?: Schedule.Schedule<any, unknown>;
-      },
-    ) =>
-      makeWaitFor(peekFn, execId, options) as Effect.Effect<
-        PeekResult<S, E>,
-        never,
-        WorkflowEngine
-      >,
-    interrupt: (executionId: string) => wf.interrupt(executionId),
-    resume: (executionId: string) => wf.resume(executionId),
-    executionId: (payload: WorkflowPayloadType<Payload>) =>
-      Effect.map(wf.executionId(payload as never), (id) => makeExecId(id)),
+    waitFor: waitForFn,
+    rerun: rerunFn,
+    interrupt: interruptFn,
+    resume: resumeFn,
+    make,
     $is,
-  } as WorkflowActor<Name, Payload, Success, Error, Signals>;
+  } as unknown as WorkflowActor<Name, Payload, Success, Error, Signals>;
 };
 
 // ── Workflow-aware helpers ─────────────���────────────────────────────��─────

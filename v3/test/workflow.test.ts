@@ -1,9 +1,9 @@
-import { describe, expect, it, test } from "effect-bun-test";
+import { describe, expect, it, test } from "effect-bun-test/v3";
 import { Effect, Exit, Layer, Schema } from "effect";
-import { WorkflowEngine } from "effect/unstable/workflow";
+import { WorkflowEngine } from "@effect/workflow";
 import { Actor, makeExecId } from "../src/index.js";
 
-class OrderError extends Schema.TaggedErrorClass<OrderError>()("OrderError", {
+class OrderError extends Schema.TaggedError<OrderError>()("OrderError", {
   message: Schema.String,
 }) {}
 
@@ -90,9 +90,6 @@ describe("Actor.fromWorkflow — execute/send", () => {
 
   it.scopedLive.layer(GreeterTest)("peek returns Pending for non-existent execution", () =>
     Effect.gen(function* () {
-      // Use makeExecId to construct a known-bad execution id (helper still
-      // exposed for backwards compat; peek-by-payload would dedup-into-the
-      // current run, so we test the never-sent path instead).
       void makeExecId("non-existent");
       const result = yield* Greeter.peek({ name: "never-sent" });
       expect(result._tag).toBe("Pending");
@@ -130,7 +127,6 @@ describe("Actor.fromWorkflow — errors", () => {
         const result = yield* FailingWorkflow.peek({ input: "peek-fail" });
         expect(result._tag).toBe("Failure");
         if (result._tag === "Failure") {
-          // Should be the user's OrderError, not a raw Cause tree
           expect(result.error).toBeInstanceOf(OrderError);
         }
       }),

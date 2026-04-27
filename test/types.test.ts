@@ -64,8 +64,35 @@ describe("type-level tests", () => {
     void _check;
   });
 
-  // Workflow Run.send/peek are migrated to per-op API in Commit 4 — until then
-  // workflows still use the legacy `Run` constructor.
+  test("Greeter.send returns ExecId<string, never> with correct phantom types", () => {
+    const _check = (): Effect.Effect<ExecId<string, never>, never, unknown> =>
+      Greeter.send({ name: "world" });
+    void _check;
+  });
+
+  test("Greeter.execute returns Effect<string>", () => {
+    const _check = (): Effect.Effect<string, never, unknown> => Greeter.execute({ name: "world" });
+    void _check;
+  });
+
+  test("Greeter.peek accepts payload and returns typed PeekResult", () => {
+    const _fn: (payload: {
+      readonly name: string;
+    }) => Effect.Effect<PeekResult<string, never>, unknown, unknown> = Greeter.peek;
+    void _fn;
+  });
+
+  test("Greeter.rerun returns Effect<void> taking payload only", () => {
+    const _fn: (payload: { readonly name: string }) => Effect.Effect<void, unknown, unknown> =
+      Greeter.rerun;
+    void _fn;
+  });
+
+  test("Greeter.make returns the underlying OperationValue tagged 'Run'", () => {
+    const _op = Greeter.make({ name: "world" });
+    type _hasTag = (typeof _op)["_tag"];
+    void _op;
+  });
 
   test("Place.peek accepts payload and returns typed PeekResult", () => {
     const _fn: (payload: {

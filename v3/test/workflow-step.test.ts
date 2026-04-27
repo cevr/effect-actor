@@ -1,4 +1,4 @@
-import { describe, expect, it, test } from "effect-bun-test";
+import { describe, expect, it, test } from "effect-bun-test/v3";
 import { Effect, Exit, Schedule, Schema } from "effect";
 import { Actor } from "../src/index.js";
 
@@ -71,7 +71,7 @@ const SleeperTest = Actor.toTestLayer(Sleeper, (payload, step) =>
 
 // ── Workflow with errors ──────────────────────────────────────────────
 
-class StepError extends Schema.TaggedErrorClass<StepError>()("StepError", {
+class StepError extends Schema.TaggedError<StepError>()("StepError", {
   reason: Schema.String,
 }) {}
 
