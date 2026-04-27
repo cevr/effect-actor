@@ -1,6 +1,6 @@
-import { describe, expect, it } from "effect-bun-test";
+import { describe, expect, it } from "effect-bun-test/v3";
 import { Effect, Exit, Layer, Schema } from "effect";
-import { ShardingConfig } from "effect/unstable/cluster";
+import { ShardingConfig } from "@effect/cluster";
 import { Actor } from "../src/index.js";
 
 const TestShardingConfig = ShardingConfig.layer({
@@ -53,7 +53,7 @@ const GenActorTest = Layer.provide(
 
 // ── ErrActor for error test ─────────────────────────────────────────────
 
-class HandlerError extends Schema.TaggedErrorClass<HandlerError>()("HandlerError", {
+class HandlerError extends Schema.TaggedError<HandlerError>()("HandlerError", {
   reason: Schema.String,
 }) {}
 

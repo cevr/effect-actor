@@ -1,6 +1,6 @@
-import { describe, expect, it } from "effect-bun-test";
+import { describe, expect, it } from "effect-bun-test/v3";
 import { Effect, Exit, Layer, Schema, Stream } from "effect";
-import { ShardingConfig, TestRunner } from "effect/unstable/cluster";
+import { ShardingConfig, TestRunner } from "@effect/cluster";
 import { Actor } from "../src/index.js";
 
 const TestShardingConfig = ShardingConfig.layer({
@@ -9,7 +9,7 @@ const TestShardingConfig = ShardingConfig.layer({
   entityTerminationTimeout: 0,
 });
 
-class ValidationError extends Schema.TaggedErrorClass<ValidationError>()("ValidationError", {
+class ValidationError extends Schema.TaggedError<ValidationError>()("ValidationError", {
   message: Schema.String,
 }) {}
 

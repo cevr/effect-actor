@@ -1,4 +1,4 @@
-import { describe, test } from "effect-bun-test";
+import { describe, test } from "effect-bun-test/v3";
 import { Effect, Schema } from "effect";
 import type { Cause, Duration, Stream } from "effect";
 import { Actor } from "../src/index.js";
@@ -6,7 +6,7 @@ import type { ExecId, PeekResult, WorkflowSignal } from "../src/index.js";
 
 // ── Type-level tests for ExecId phantom brand inference ───────────────────
 
-class OrderError extends Schema.TaggedErrorClass<OrderError>()("OrderError", {
+class OrderError extends Schema.TaggedError<OrderError>()("OrderError", {
   message: Schema.String,
 }) {}
 
@@ -77,7 +77,7 @@ describe("type-level tests", () => {
   test("Place.watch accepts payload and returns typed Stream of PeekResult", () => {
     const _fn: (
       payload: { readonly item: string },
-      options?: { readonly interval?: Duration.Input },
+      options?: { readonly interval?: Duration.DurationInput },
     ) => Stream.Stream<PeekResult<string, OrderError>, unknown, unknown> = Order.Place.watch;
     void _fn;
   });

@@ -43,6 +43,8 @@ import {
   Pending,
   Success,
 } from "./receipt.js";
+import { EncoreMessageStorage } from "./storage.js";
+import type { EncoreMessageStorageShape } from "./storage.js";
 
 // ── Layer passthrough polyfill ─────────────────────────────────────────────
 // Layer.passthrough was removed in Effect 3.x. Polyfill it so input services
@@ -105,15 +107,10 @@ type ReservedKeys =
   | "_meta"
   | "$is"
   | "Context"
-  | "ref"
   | "name"
   | "type"
   | "of"
-  | "peek"
-  | "watch"
-  | "waitFor"
   | "interrupt"
-  | "executionId"
   | "flush"
   | "redeliver"
   | "pipe";
@@ -126,15 +123,10 @@ const RESERVED_KEYS = new Set<string>([
   "_meta",
   "$is",
   "Context",
-  "ref",
   "name",
   "type",
   "of",
-  "peek",
-  "watch",
-  "waitFor",
   "interrupt",
-  "executionId",
   "flush",
   "redeliver",
   "pipe",
@@ -218,30 +210,6 @@ type PayloadFieldsType<C extends OperationDef> = C extends {
       ? { readonly _payload: Schema.Schema.Type<P> }
       : {};
 
-type OperationConstructorPayload<C extends OperationDef> = C extends {
-  readonly payload: infer F extends Schema.Struct.Fields;
-}
-  ? {} extends {
-      [K in keyof F]: Schema.Schema.Type<F[K] extends Schema.Schema.Any ? F[K] : never>;
-    }
-    ? []
-    : [
-        payload: {
-          readonly [K in keyof F]: Schema.Schema.Type<
-            F[K] extends Schema.Schema.Any ? F[K] : never
-          >;
-        },
-      ]
-  : C extends { readonly payload: infer P extends FieldfulSchema }
-    ? [payload: Schema.Schema.Type<P>]
-    : C extends { readonly payload: infer P extends Schema.Schema.Any }
-      ? [payload: Schema.Schema.Type<P>]
-      : [];
-
-type OperationConstructor<Name extends string, Tag extends string, C extends OperationDef> = (
-  ...args: OperationConstructorPayload<C>
-) => OperationValue<Name, Tag, C>;
-
 // ── Union of all OperationValues for an actor ──────────────────────────────
 
 type OperationUnion<Name extends string, Defs extends OperationDefs> = {
@@ -309,58 +277,121 @@ export type ActorClientFactory<Name extends string, Defs extends OperationDefs> 
   entityId: string,
 ) => Effect.Effect<ActorRef<Name, Defs>>;
 
+// ── OperationHandle — per-op payload-only dispatch surface ─────────────────
+
+/**
+ * `PayloadInput<C>` is the user-facing payload type for an operation. For
+ * struct fields, it's the readonly struct; for opaque/scalar payload, it's
+ * the raw scalar; for empty payload, it's `void`.
+ */
+export type PayloadInput<C extends OperationDef> = C extends {
+  readonly payload: infer F extends Schema.Struct.Fields;
+}
+  ? {
+      readonly [K in keyof F]: Schema.Schema.Type<F[K] extends Schema.Schema.Any ? F[K] : never>;
+    }
+  : C extends { readonly payload: infer P extends FieldfulSchema }
+    ? Schema.Schema.Type<P>
+    : C extends { readonly payload: infer P extends Schema.Schema.Any }
+      ? Schema.Schema.Type<P>
+      : void;
+
+/**
+ * Per-operation handle. The dispatch surface for a single tag — replaces the
+ * old `Actor.ref(id)` + `Actor.Op({...})` value-construction pattern with a
+ * payload-only API. The `id` fn on the OperationDef is invoked internally to
+ * derive `{entityId, primaryKey}` for routing and dedup.
+ */
+export interface OperationHandle<
+  Name extends string,
+  Tag extends string,
+  C extends OperationDef,
+  Defs extends OperationDefs = OperationDefs,
+> {
+  readonly _tag: "OperationHandle";
+  readonly name: Tag;
+  readonly execute: (
+    payload: PayloadInput<C>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<SuccessOf<C>>,
+    Schema.Schema.Type<ErrorOf<C>>,
+    ActorClientService<Name, Defs>
+  >;
+  readonly send: (
+    payload: PayloadInput<C>,
+  ) => Effect.Effect<
+    ExecId<Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>,
+    never,
+    ActorClientService<Name, Defs>
+  >;
+  readonly executionId: (
+    payload: PayloadInput<C>,
+  ) => Effect.Effect<ExecId<Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>>;
+  readonly peek: (
+    payload: PayloadInput<C>,
+  ) => Effect.Effect<
+    PeekResult<Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>,
+    PersistenceError | MalformedMessage,
+    MessageStorage.MessageStorage | Sharding.Sharding
+  >;
+  readonly watch: (
+    payload: PayloadInput<C>,
+    options?: { readonly interval?: Duration.DurationInput },
+  ) => Stream.Stream<
+    PeekResult<Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>,
+    PersistenceError | MalformedMessage,
+    MessageStorage.MessageStorage | Sharding.Sharding
+  >;
+  readonly waitFor: (
+    payload: PayloadInput<C>,
+    options?: {
+      readonly filter?: (
+        result: PeekResult<Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>,
+      ) => boolean;
+      // eslint-disable-next-line typescript-eslint/no-explicit-any
+      readonly schedule?: Schedule.Schedule<any, unknown>;
+    },
+  ) => Effect.Effect<
+    PeekResult<Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>,
+    PersistenceError | MalformedMessage,
+    MessageStorage.MessageStorage | Sharding.Sharding
+  >;
+  readonly rerun: (
+    payload: PayloadInput<C>,
+  ) => Effect.Effect<void, PersistenceError, EncoreMessageStorageShape | Sharding.Sharding>;
+  readonly make: (payload: PayloadInput<C>) => OperationValue<Name, Tag, C>;
+}
+
 // ── EntityActor — the unified return type ──────────────────────────────────
 
-type ActorConstructors<Name extends string, Defs extends OperationDefs> = {
-  readonly [Tag in keyof Defs & string]: OperationConstructor<Name, Tag, Defs[Tag]>;
+type ActorOperationHandles<Name extends string, Defs extends OperationDefs> = {
+  readonly [Tag in keyof Defs & string]: OperationHandle<Name, Tag, Defs[Tag], Defs>;
 };
 
 export type EntityActor<
   Name extends string,
   Defs extends OperationDefs,
   Rpcs extends Rpc.Any = DefRpcs<Defs>,
-> = ActorConstructors<Name, Defs> &
+> = ActorOperationHandles<Name, Defs> &
   Pipeable.Pipeable & {
     readonly _tag: "EntityActor";
     readonly name: Name;
     readonly type: Name;
     readonly _meta: ActorMeta<Name, Defs, Rpcs>;
     readonly Context: Context.Tag<ActorClientService<Name, Defs>, ActorClientFactory<Name, Defs>>;
-    readonly ref: (
+    /**
+     * Stop accepting more work for this entity — clears the pending mailbox.
+     * Distinct intent from `flush` ("clean slate"): use `interrupt` when you
+     * want the entity to stop processing new messages but want to preserve
+     * the conceptual "I asked the actor to stop" semantics.
+     *
+     * Programmatic in-flight fiber cancellation requires `Sharding.passivate`,
+     * which is not yet a public API in effect-cluster. In practice, in-flight
+     * handlers run to completion; only queued/pending work is cleared.
+     */
+    readonly interrupt: (
       entityId: string,
-    ) => Effect.Effect<ActorRef<Name, Defs>, never, ActorClientService<Name, Defs>>;
-    readonly peek: <S, E>(
-      execId: ExecId<S, E>,
-    ) => Effect.Effect<
-      PeekResult<S, E>,
-      PersistenceError | MalformedMessage,
-      MessageStorage.MessageStorage | Sharding.Sharding
-    >;
-    readonly watch: <S, E>(
-      execId: ExecId<S, E>,
-      options?: { readonly interval?: Duration.DurationInput },
-    ) => Stream.Stream<
-      PeekResult<S, E>,
-      PersistenceError | MalformedMessage,
-      MessageStorage.MessageStorage | Sharding.Sharding
-    >;
-    readonly waitFor: <S, E>(
-      execId: ExecId<S, E>,
-      options?: {
-        readonly filter?: (result: PeekResult<S, E>) => boolean;
-        // eslint-disable-next-line typescript-eslint/no-explicit-any
-        readonly schedule?: Schedule.Schedule<any, unknown>;
-      },
-    ) => Effect.Effect<
-      PeekResult<S, E>,
-      PersistenceError | MalformedMessage,
-      MessageStorage.MessageStorage | Sharding.Sharding
-    >;
-    readonly executionId: <V extends OperationUnion<Name, Defs>>(
-      entityId: string,
-      op: V,
-    ) => Effect.Effect<ExecId<OperationOutput<V>, OperationError<V>>>;
-    readonly interrupt: (entityId: string) => Effect.Effect<void, never, Sharding.Sharding>;
+    ) => Effect.Effect<void, PersistenceError, MessageStorage.MessageStorage | Sharding.Sharding>;
     readonly flush: (
       actorId: string,
     ) => Effect.Effect<void, PersistenceError, MessageStorage.MessageStorage | Sharding.Sharding>;
@@ -493,6 +524,28 @@ const redeliverImpl = (
     const storage = yield* MessageStorage.MessageStorage;
     const address = yield* resolveAddress(entity, actorId);
     yield* storage.resetAddress(address);
+  });
+
+// ── rerun — surgical per-execId clear via deleteEnvelope ─────────────────
+
+const rerunImpl = (
+  // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs type erased
+  entity: ClusterEntity.Entity<string, any>,
+  def: OperationDef | undefined,
+  tag: string,
+  payload: unknown,
+): Effect.Effect<void, PersistenceError, EncoreMessageStorageShape | Sharding.Sharding> =>
+  Effect.gen(function* () {
+    const { entityId, primaryKey } = resolveId(def, payload, tag);
+    const storage = yield* EncoreMessageStorage;
+    const address = yield* resolveAddress(entity, entityId);
+    const maybeRequestId = yield* storage.requestIdForPrimaryKey({
+      address,
+      tag,
+      id: primaryKey,
+    });
+    if (Option.isNone(maybeRequestId)) return;
+    yield* storage.deleteEnvelope(maybeRequestId.value);
   });
 
 const peekImpl = (
@@ -697,15 +750,15 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
 
   const entity = Entity.make(name, rpcs as Array<DefRpcs<Defs>>);
 
-  const constructors: Record<string, Function> = {};
-  for (const tag of Object.keys(definitions)) {
-    const def = definitions[tag] as OperationDef;
-    const opaque = def.payload !== undefined && isOpaquePayload(def.payload);
-    constructors[tag] = (input?: unknown) =>
-      opaque
-        ? { _tag: tag, _payload: input }
-        : { _tag: tag, ...(input != null && typeof input === "object" ? input : {}) };
-  }
+  // Build the raw OperationValue for a given tag/payload — used by `make`
+  // escape hatch and internally by execute/send to feed buildActorRef.
+  const buildOpValue = (tag: string, payload: unknown) => {
+    const def = definitions[tag] as OperationDef | undefined;
+    const opaque = def?.payload !== undefined && isOpaquePayload(def.payload);
+    return opaque
+      ? { _tag: tag, _payload: payload }
+      : { _tag: tag, ...(payload != null && typeof payload === "object" ? payload : {}) };
+  };
 
   const contextTag = Context.GenericTag<
     ActorClientService<Name, Defs>,
@@ -720,50 +773,38 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
       "_tag" in value &&
       (value as Record<string, unknown>)["_tag"] === tag;
 
-  const actorFn = (entityId: string) => Effect.flatMap(contextTag, (factory) => factory(entityId));
-
   // eslint-disable-next-line typescript-eslint/no-explicit-any -- Entity<Name> → Entity<string> widening
   const entityAny = entity as unknown as ClusterEntity.Entity<string, any>;
-
-  const peekFn = <S, E>(execId: ExecId<S, E>) =>
-    peekImpl(entityAny, execId, definitions) as Effect.Effect<
-      PeekResult<S, E>,
-      PersistenceError | MalformedMessage,
-      MessageStorage.MessageStorage | Sharding.Sharding
-    >;
-
-  const watchFn = <S, E>(
-    execId: ExecId<S, E>,
-    options?: { readonly interval?: Duration.DurationInput },
-  ) =>
-    watchImpl(entityAny, execId, definitions, options) as Stream.Stream<
-      PeekResult<S, E>,
-      PersistenceError | MalformedMessage,
-      MessageStorage.MessageStorage | Sharding.Sharding
-    >;
 
   const flushFn = (actorId: string) => flushImpl(entityAny, actorId);
   const redeliverFn = (actorId: string) => redeliverImpl(entityAny, actorId);
 
-  const executionIdFn = (
-    entityId: string,
-    op: { readonly _tag: string; readonly [key: string]: unknown },
-  ) => {
-    const tag = op["_tag"];
-    const def = definitions[tag] as OperationDef | undefined;
-    const pkInput = def?.payload && isOpaquePayload(def.payload) ? op["_payload"] : op;
-    const { primaryKey } = resolveId(def, pkInput, tag);
-    return Effect.succeed(makeExecId(`${entityId}\x00${tag}\x00${primaryKey}`));
-  };
-
-  const interruptFn = (_entityId: string) =>
-    Effect.die(
-      new Error(
-        `effect-encore: entity interrupt for "${name}" is not supported — Sharding.passivate is not a public API`,
-      ),
-    );
+  // interrupt — rewired from Effect.die to clearAddress. Distinct intent from
+  // flush ("stop accepting more work" vs "clean slate"). Programmatic
+  // in-flight cancellation requires Sharding.passivate (not yet public).
+  const interruptFn = (entityId: string) => flushImpl(entityAny, entityId);
 
   const ofFn = <T>(handlers: T): T => handlers;
+
+  // Build per-op handles. Each handle derives entityId/primaryKey from
+  // payload via resolveId, and composes execute/send/peek/watch/waitFor/
+  // executionId/rerun/make on top of the existing impls.
+  const handles: Record<string, OperationHandle<Name, string, OperationDef>> = {};
+  for (const tag of Object.keys(definitions)) {
+    const def = definitions[tag] as OperationDef;
+    handles[tag] = makeOperationHandle<Name, string, OperationDef>({
+      name,
+      tag,
+      def,
+      definitions,
+      contextTag: contextTag as unknown as Context.Tag<
+        ActorClientService<Name, OperationDefs>,
+        ActorClientFactory<Name, OperationDefs>
+      >,
+      entityAny,
+      buildOpValue,
+    });
+  }
 
   const actor = Object.assign(Object.create(Pipeable.Prototype), {
     _tag: "EntityActor" as const,
@@ -772,26 +813,86 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
     _meta: { name, definitions, entity },
     Context: contextTag,
     of: ofFn,
-    ref: actorFn,
-    peek: peekFn,
-    watch: watchFn,
-    waitFor: <S, E>(
-      execId: ExecId<S, E>,
-      options?: {
-        readonly filter?: (result: PeekResult<S, E>) => boolean;
-        // eslint-disable-next-line typescript-eslint/no-explicit-any
-        readonly schedule?: Schedule.Schedule<any, unknown>;
-      },
-    ) => makeWaitFor(peekFn, execId, options),
-    executionId: executionIdFn,
     interrupt: interruptFn,
     flush: flushFn,
     redeliver: redeliverFn,
     $is,
-    ...constructors,
+    ...handles,
   });
 
   return actor as EntityActor<Name, Defs>;
+};
+
+// ── makeOperationHandle — build a single OperationHandle ─────────────────
+
+const makeOperationHandle = <
+  Name extends string,
+  Tag extends string,
+  C extends OperationDef,
+>(args: {
+  readonly name: Name;
+  readonly tag: Tag;
+  readonly def: C;
+  readonly definitions: OperationDefs;
+  readonly contextTag: Context.Tag<
+    ActorClientService<Name, OperationDefs>,
+    ActorClientFactory<Name, OperationDefs>
+  >;
+  // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity erased
+  readonly entityAny: ClusterEntity.Entity<string, any>;
+  readonly buildOpValue: (tag: string, payload: unknown) => Record<string, unknown>;
+}): OperationHandle<Name, Tag, C> => {
+  const { name, tag, def, definitions, contextTag, entityAny, buildOpValue } = args;
+
+  const idOf = (payload: unknown): { readonly entityId: string; readonly primaryKey: string } =>
+    resolveId(def, payload, tag);
+
+  const execId = (payload: unknown) => {
+    const { entityId, primaryKey } = idOf(payload);
+    return makeExecId(`${entityId}\x00${tag}\x00${primaryKey}`);
+  };
+
+  const handle: OperationHandle<Name, Tag, C> = {
+    _tag: "OperationHandle" as const,
+    name: tag,
+    execute: ((payload: unknown) =>
+      Effect.gen(function* () {
+        const factory = yield* contextTag;
+        const { entityId } = idOf(payload);
+        const ref = yield* factory(entityId);
+        return yield* ref.execute(buildOpValue(tag, payload) as never);
+      })) as never,
+    send: ((payload: unknown) =>
+      Effect.gen(function* () {
+        const factory = yield* contextTag;
+        const { entityId } = idOf(payload);
+        const ref = yield* factory(entityId);
+        return yield* ref.send(buildOpValue(tag, payload) as never);
+      })) as never,
+    executionId: ((payload: unknown) => Effect.succeed(execId(payload))) as never,
+    peek: ((payload: unknown) =>
+      peekImpl(entityAny, execId(payload), definitions) as never) as never,
+    watch: ((payload: unknown, options?: { readonly interval?: Duration.DurationInput }) =>
+      watchImpl(entityAny, execId(payload), definitions, options) as never) as never,
+    waitFor: ((
+      payload: unknown,
+      options?: {
+        readonly filter?: (result: PeekResult) => boolean;
+        // eslint-disable-next-line typescript-eslint/no-explicit-any
+        readonly schedule?: Schedule.Schedule<any, unknown>;
+      },
+    ) =>
+      makeWaitFor(
+        (eid) => peekImpl(entityAny, eid as string, definitions),
+        execId(payload),
+        options as never,
+      )) as never,
+    rerun: ((payload: unknown) => rerunImpl(entityAny, def, tag, payload)) as never,
+    make: ((payload: unknown) => buildOpValue(tag, payload) as never) as never,
+  };
+
+  void name;
+  return handle;
 };
 
 // ── Actor.toLayer ──────────────────────────────────────────────────────────

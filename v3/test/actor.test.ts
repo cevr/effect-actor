@@ -1,7 +1,7 @@
-import { describe, expect, it, test } from "effect-bun-test";
+import { describe, expect, it, test } from "effect-bun-test/v3";
 import { Context, DateTime, Effect, Layer, PrimaryKey, Schema } from "effect";
-import { ClusterSchema, ShardingConfig } from "effect/unstable/cluster";
-import * as DeliverAt from "effect/unstable/cluster/DeliverAt";
+import { ClusterSchema, ShardingConfig } from "@effect/cluster";
+import * as DeliverAt from "@effect/cluster/DeliverAt";
 import { Actor } from "../src/index.js";
 
 const TestShardingConfig = ShardingConfig.layer({
@@ -270,14 +270,14 @@ describe("deliverAt", () => {
 
     const rpc = Delayed._meta.entity.protocol.requests.get("Process")!;
     const payloadSchema = rpc.payloadSchema;
-    const now = DateTime.makeUnsafe(Date.now());
+    const now = DateTime.unsafeMake(Date.now());
     const instance = new (payloadSchema as unknown as new (args: unknown) => unknown)({
       id: "test-123",
       deliverAt: now,
     });
 
     expect(DeliverAt.isDeliverAt(instance)).toBe(true);
-    expect(DeliverAt.toMillis(instance)).toBe(now.epochMilliseconds);
+    expect(DeliverAt.toMillis(instance)).toBe(DateTime.toEpochMillis(now));
   });
 
   test("attaches PrimaryKey.symbol to payload instances when primaryKey is configured", () => {
@@ -303,14 +303,14 @@ describe("deliverAt", () => {
       Fire: {
         payload: { when: Schema.DateTimeUtc },
         persisted: true,
-        id: (p: { when: DateTime.DateTime }) => String(p.when.epochMilliseconds),
+        id: (p: { when: DateTime.DateTime }) => String(DateTime.toEpochMillis(p.when)),
         deliverAt: (p: { when: DateTime.DateTime }) => p.when,
       },
     });
 
     const rpc = DelayedOnly._meta.entity.protocol.requests.get("Fire")!;
     const payloadSchema = rpc.payloadSchema;
-    const now = DateTime.makeUnsafe(Date.now());
+    const now = DateTime.unsafeMake(Date.now());
     const instance = new (payloadSchema as unknown as new (args: unknown) => unknown)({
       when: now,
     });
@@ -365,12 +365,12 @@ describe("deliverAt", () => {
       },
     });
 
-    const now = DateTime.makeUnsafe(Date.now());
+    const now = DateTime.unsafeMake(Date.now());
     const instance = new ScheduledPayload({ id: "s-1", when: now });
 
     expect(instance[PrimaryKey.symbol]()).toBe("s-1");
     expect(DeliverAt.isDeliverAt(instance)).toBe(true);
-    expect(DeliverAt.toMillis(instance)).toBe(now.epochMilliseconds);
+    expect(DeliverAt.toMillis(instance)).toBe(DateTime.toEpochMillis(now));
 
     const rpc = Scheduled._meta.entity.protocol.requests.get("Run")!;
     expect(rpc.payloadSchema).toBe(ScheduledPayload);

@@ -1,6 +1,6 @@
-import { describe, expect, it } from "effect-bun-test";
+import { describe, expect, it } from "effect-bun-test/v3";
 import { Effect, Schema } from "effect";
-import { TestRunner } from "effect/unstable/cluster";
+import { TestRunner } from "@effect/cluster";
 import { Actor } from "../src/index.js";
 
 const FlushActor = Actor.fromEntity("FlushActor", {
