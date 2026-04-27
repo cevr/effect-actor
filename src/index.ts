@@ -43,3 +43,9 @@ export {
   isTerminal,
 } from "./receipt.js";
 export * as Observability from "./observability.js";
+export {
+  EncoreMessageStorage,
+  fromMessageStorage,
+  layer as encoreMessageStorageLayer,
+} from "./storage.js";
+export type { EncoreMessageStorageShape } from "./storage.js";
