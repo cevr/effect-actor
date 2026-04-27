@@ -57,14 +57,42 @@ const layerPassthrough = <ROut, E, RIn>(
 const isOpaquePayload = (payload: unknown): boolean =>
   Schema.isSchema(payload) && !("fields" in (payload as object));
 
+// ── id-fn resolver ─────────────────────────────────────────────────────────
+// Internal helper: invoke `def.id(payload)` and normalize the result to a
+// `{entityId, primaryKey}` pair. String returns map entityId === primaryKey;
+// object returns may diverge, with primaryKey defaulting to entityId.
+const resolveId = (
+  def: OperationDef | undefined,
+  payload: unknown,
+  fallbackTag: string,
+): { readonly entityId: string; readonly primaryKey: string } => {
+  const idFn = def?.["id"] as ((p: unknown) => EntityIdReturn) | undefined;
+  if (!idFn) {
+    return { entityId: fallbackTag, primaryKey: fallbackTag };
+  }
+  const result = idFn(payload as never);
+  if (typeof result === "string") {
+    return { entityId: result, primaryKey: result };
+  }
+  return { entityId: result.entityId, primaryKey: result.primaryKey ?? result.entityId };
+};
+
 // ── Operation DSL ──────────────────────────────────────────────────────────
+
+/**
+ * Result of an entity operation's `id` fn. Either:
+ * - `string` — entityId AND primaryKey use this value (the common case).
+ * - `{entityId, primaryKey?}` — divergent case where the dedup key differs
+ *   from the mailbox address. primaryKey defaults to entityId when omitted.
+ */
+export type EntityIdReturn = string | { readonly entityId: string; readonly primaryKey?: string };
 
 export interface OperationDef {
   readonly payload?: Schema.Schema.Any | Schema.Struct.Fields;
   readonly success?: Schema.Schema.Any;
   readonly error?: Schema.Schema.Any | Schema.Schema.All;
   readonly persisted?: boolean;
-  readonly primaryKey: (payload: never) => string;
+  readonly id: (payload: never) => EntityIdReturn;
   readonly deliverAt?: (payload: never) => DateTime.DateTime;
 }
 
@@ -350,8 +378,13 @@ export type EntityActor<
 const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any => {
   const options: Record<string, unknown> = {};
   const payload = def["payload"];
-  const pkFn = def["primaryKey"];
   const daFn = def["deliverAt"];
+
+  // PrimaryKey.symbol returns the dedup key cluster uses for message dedup.
+  // That's the `primaryKey` portion of resolveId — for string-form `id`,
+  // primaryKey === entityId; for object-form, divergent. `id` is required
+  // on every OperationDef.
+  const pkOf = (p: unknown) => resolveId(def, p, tag).primaryKey;
 
   if (payload) {
     if (Schema.isSchema(payload)) {
@@ -367,11 +400,9 @@ const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any 
 
       const proto = PayloadClass.prototype as Record<string | symbol, unknown>;
 
-      if (pkFn) {
-        proto[PrimaryKey.symbol] = function (this: unknown) {
-          return (pkFn as Function)(this) as string;
-        };
-      }
+      proto[PrimaryKey.symbol] = function (this: unknown) {
+        return pkOf(this);
+      };
 
       if (daFn) {
         proto[DeliverAt.symbol] = function (this: unknown) {
@@ -381,7 +412,7 @@ const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any 
 
       options["payload"] = PayloadClass;
     }
-  } else if (pkFn) {
+  } else {
     // Zero-payload operations still need PrimaryKey.symbol for storage indexing
     const Base = Schema.Class<Record<string, unknown>>(`effect-encore/${actorName}/${tag}/Payload`)(
       {},
@@ -391,7 +422,7 @@ const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any 
 
     (EmptyPayloadClass.prototype as Record<string | symbol, unknown>)[PrimaryKey.symbol] =
       function () {
-        return (pkFn as Function)(undefined) as string;
+        return pkOf(undefined);
       };
 
     options["payload"] = EmptyPayloadClass;
@@ -720,9 +751,8 @@ const fromEntity = <const Name extends string, const Defs extends OperationDefs>
   ) => {
     const tag = op["_tag"];
     const def = definitions[tag] as OperationDef | undefined;
-    const pkFn = def?.["primaryKey"] as ((p: unknown) => string) | undefined;
     const pkInput = def?.payload && isOpaquePayload(def.payload) ? op["_payload"] : op;
-    const primaryKey = pkFn ? pkFn(pkInput) : tag;
+    const { primaryKey } = resolveId(def, pkInput, tag);
     return Effect.succeed(makeExecId(`${entityId}\x00${tag}\x00${primaryKey}`));
   };
 
@@ -984,9 +1014,8 @@ const buildActorRef = <Name extends string, Defs extends OperationDefs>(
       const arg = rpcArg(op, def);
       const discardCall =
         arg !== undefined ? fn(arg, { discard: true }) : fn(undefined, { discard: true });
-      const pkFn = def?.["primaryKey"] as ((p: unknown) => string) | undefined;
       const pkInput = def?.payload && isOpaquePayload(def.payload) ? op["_payload"] : op;
-      const primaryKey = pkFn ? pkFn(pkInput) : tag;
+      const { primaryKey } = resolveId(def, pkInput, tag);
       const execId = `${_entityId}\x00${tag}\x00${primaryKey}`;
       return Effect.map(discardCall ?? Effect.void, () => makeExecId(execId));
     },
@@ -1036,7 +1065,12 @@ export interface WorkflowDef<
   readonly payload: Payload;
   readonly success?: Success;
   readonly error?: Error;
-  readonly idempotencyKey: (payload: {
+  /**
+   * Workflow `id` fn returns string only — workflows have no entity dimension,
+   * so the divergent `{entityId, primaryKey}` form is rejected at the type
+   * level. The string is used as the workflow's idempotency / execution key.
+   */
+  readonly id: (payload: {
     readonly [K in keyof Payload]: Schema.Schema.Type<
       Payload[K] extends Schema.Schema.Any ? Payload[K] : never
     >;
@@ -1063,7 +1097,7 @@ type WorkflowRunDefs<
     readonly payload: Schema.Struct<Payload>;
     readonly success: Success;
     readonly error: Error;
-    readonly primaryKey: (payload: never) => string;
+    readonly id: (payload: never) => EntityIdReturn;
   };
 };
 
@@ -1132,7 +1166,8 @@ const fromWorkflow = <
   const workflowOptions: Record<string, unknown> = {
     name,
     payload: def.payload,
-    idempotencyKey: def.idempotencyKey,
+    // upstream UpstreamWorkflow takes `idempotencyKey`; encore exposes `id`.
+    idempotencyKey: def.id,
   };
   if (def.success) workflowOptions["success"] = def.success;
   if (def.error) workflowOptions["error"] = def.error;

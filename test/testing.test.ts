@@ -13,13 +13,13 @@ const Echo = Actor.fromEntity("Echo", {
   Say: {
     payload: { msg: Schema.String },
     success: Schema.String,
-    primaryKey: (p: { msg: string }) => p.msg,
+    id: (p: { msg: string }) => p.msg,
   },
   Fire: {
     payload: { x: Schema.Number },
     success: Schema.Number,
     persisted: true,
-    primaryKey: (p: { x: number }) => String(p.x),
+    id: (p: { x: number }) => String(p.x),
   },
 });
 
@@ -64,7 +64,7 @@ describe("Actor.toTestLayer", () => {
         Track: {
           payload: { item: Schema.String },
           success: Schema.String,
-          primaryKey: (p: { item: string }) => p.item,
+          id: (p: { item: string }) => p.item,
         },
       });
 

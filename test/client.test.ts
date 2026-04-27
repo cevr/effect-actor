@@ -18,7 +18,7 @@ const Validator = Actor.fromEntity("Validator", {
     payload: { input: Schema.String },
     success: Schema.String,
     error: ValidationError,
-    primaryKey: (p: { input: string }) => p.input,
+    id: (p: { input: string }) => p.input,
   },
 });
 
@@ -53,7 +53,7 @@ describe("Ref.execute", () => {
     Layer.provide(
       Actor.toTestLayer(
         Actor.fromEntity("Boom", {
-          Explode: { primaryKey: () => "boom" },
+          Explode: { id: () => "boom" },
         }),
         {
           Explode: () => Effect.die("kaboom"),
@@ -64,7 +64,7 @@ describe("Ref.execute", () => {
   )("surfaces handler defects as defects", () =>
     Effect.gen(function* () {
       const BoomActor = Actor.fromEntity("Boom", {
-        Explode: { primaryKey: () => "boom" },
+        Explode: { id: () => "boom" },
       });
       const ref = yield* BoomActor.ref("b-1");
       const exit = yield* ref.execute(BoomActor.Explode()).pipe(Effect.exit);
@@ -76,7 +76,7 @@ describe("Ref.execute", () => {
     Layer.provide(
       Actor.toTestLayer(
         Actor.fromEntity("Volatile", {
-          Ping: { success: Schema.String, primaryKey: () => "ping" },
+          Ping: { success: Schema.String, id: () => "ping" },
         }),
         {
           Ping: () => Effect.succeed("pong"),
@@ -87,7 +87,7 @@ describe("Ref.execute", () => {
   )("works without MessageStorage (non-persisted path)", () =>
     Effect.gen(function* () {
       const VolatileActor = Actor.fromEntity("Volatile", {
-        Ping: { success: Schema.String, primaryKey: () => "ping" },
+        Ping: { success: Schema.String, id: () => "ping" },
       });
       const ref = yield* VolatileActor.ref("vol-1");
       const result = yield* ref.execute(VolatileActor.Ping());
@@ -101,7 +101,7 @@ const CastActor = Actor.fromEntity("CastActor", {
     payload: { input: Schema.String },
     success: Schema.String,
     persisted: true,
-    primaryKey: (p: { input: string }) => p.input,
+    id: (p: { input: string }) => p.input,
   },
 });
 

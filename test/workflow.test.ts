@@ -16,7 +16,7 @@ const ProcessOrder = Actor.fromWorkflow("ProcessOrder", {
   payload: { orderId: Schema.String },
   success: OrderResult,
   error: OrderError,
-  idempotencyKey: (p: { orderId: string }) => p.orderId,
+  id: (p: { orderId: string }) => p.orderId,
 });
 
 describe("Actor.fromWorkflow", () => {
@@ -49,7 +49,7 @@ describe("Actor.fromWorkflow", () => {
 const Greeter = Actor.fromWorkflow("Greeter", {
   payload: { name: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { name: string }) => p.name,
+  id: (p: { name: string }) => p.name,
 });
 
 const GreeterTest = Actor.toTestLayer(Greeter, (payload) =>
@@ -100,7 +100,7 @@ describe("Actor.fromWorkflow — execute/send", () => {
 const FailingWorkflow = Actor.fromWorkflow("FailingWorkflow", {
   payload: { input: Schema.String },
   error: OrderError,
-  idempotencyKey: (p: { input: string }) => p.input,
+  id: (p: { input: string }) => p.input,
 });
 
 const FailingTest = Actor.toTestLayer(FailingWorkflow, () =>
@@ -139,7 +139,7 @@ describe("Actor.fromWorkflow — errors", () => {
 const DefectWorkflow = Actor.fromWorkflow("DefectWorkflow", {
   payload: { input: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { input: string }) => p.input,
+  id: (p: { input: string }) => p.input,
 });
 
 const DefectTest = Actor.toTestLayer(DefectWorkflow, () => Effect.die("unexpected crash"));

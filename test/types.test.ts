@@ -15,18 +15,18 @@ const Order = Actor.fromEntity("Order", {
     payload: { item: Schema.String },
     success: Schema.String,
     error: OrderError,
-    primaryKey: (p: { item: string }) => p.item,
+    id: (p: { item: string }) => p.item,
   },
   Count: {
     success: Schema.Number,
-    primaryKey: () => "singleton",
+    id: () => "singleton",
   },
 });
 
 const Greeter = Actor.fromWorkflow("Greeter", {
   payload: { name: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { name: string }) => p.name,
+  id: (p: { name: string }) => p.name,
 });
 
 // ── Compile-time type assertions ──────────────────────────────────────────
@@ -147,7 +147,7 @@ const FailableWorkflow = Actor.fromWorkflow("Failable", {
   payload: { id: Schema.String },
   success: Schema.String,
   error: OrderError,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
 });
 
 describe("step DSL type-level tests", () => {
@@ -206,7 +206,7 @@ class ApprovalDecision extends Schema.TaggedClass<ApprovalDecision>()("ApprovalD
 const SignalWorkflow = Actor.fromWorkflow("SignalWorkflow", {
   payload: { id: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
   signals: {
     Approval: { success: ApprovalDecision },
     Cancel: {},
@@ -216,7 +216,7 @@ const SignalWorkflow = Actor.fromWorkflow("SignalWorkflow", {
 const NoSignalWorkflow = Actor.fromWorkflow("NoSignalWorkflow", {
   payload: { id: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
 });
 
 describe("declarative signal type-level tests", () => {

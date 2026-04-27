@@ -13,11 +13,11 @@ const Counter = Actor.fromEntity("Counter", {
   Increment: {
     payload: { amount: Schema.Number },
     success: Schema.Number,
-    primaryKey: (p: { amount: number }) => String(p.amount),
+    id: (p: { amount: number }) => String(p.amount),
   },
   GetCount: {
     success: Schema.String,
-    primaryKey: () => "singleton",
+    id: () => "singleton",
   },
 });
 
@@ -37,7 +37,7 @@ const GenActor = Actor.fromEntity("GenActor", {
   Compute: {
     payload: { x: Schema.Number },
     success: Schema.Number,
-    primaryKey: (p: { x: number }) => String(p.x),
+    id: (p: { x: number }) => String(p.x),
   },
 });
 
@@ -61,7 +61,7 @@ const ErrActor = Actor.fromEntity("ErrActor", {
   Fail: {
     payload: { input: Schema.String },
     error: HandlerError,
-    primaryKey: (p: { input: string }) => p.input,
+    id: (p: { input: string }) => p.input,
   },
 });
 
@@ -78,7 +78,7 @@ const InspectActor = Actor.fromEntity("InspectActor", {
   Inspect: {
     payload: { value: Schema.String },
     success: Schema.String,
-    primaryKey: (p: { value: string }) => p.value,
+    id: (p: { value: string }) => p.value,
   },
 });
 

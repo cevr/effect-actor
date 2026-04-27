@@ -9,7 +9,7 @@ const FlushActor = Actor.fromEntity("FlushActor", {
     payload: { input: Schema.String },
     success: Schema.String,
     persisted: true,
-    primaryKey: (p: { input: string }) => p.input,
+    id: (p: { input: string }) => p.input,
   },
 });
 
@@ -68,7 +68,7 @@ const RedeliverActor = Actor.fromEntity("RedeliverActor", {
     payload: { input: Schema.String },
     success: Schema.String,
     persisted: true,
-    primaryKey: (p: { input: string }) => p.input,
+    id: (p: { input: string }) => p.input,
   },
 });
 

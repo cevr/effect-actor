@@ -13,18 +13,18 @@ const OrderActor = Actor.fromEntity("Order", {
     payload: { item: Schema.String, qty: Schema.Number },
     success: Schema.String,
     persisted: true,
-    primaryKey: (p: { item: string; qty: number }) => `${p.item}-${p.qty}`,
+    id: (p: { item: string; qty: number }) => `${p.item}-${p.qty}`,
   },
   Cancel: {
     payload: { reason: Schema.String },
     error: OrderError,
     persisted: true,
-    primaryKey: (p: { reason: string }) => p.reason,
+    id: (p: { reason: string }) => p.reason,
   },
   QuickCheck: {
     payload: { id: Schema.String },
     success: Schema.String,
-    primaryKey: (p: { id: string }) => p.id,
+    id: (p: { id: string }) => p.id,
   },
 });
 

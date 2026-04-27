@@ -14,11 +14,11 @@ const Counter = Actor.fromEntity("Counter", {
   Increment: {
     payload: { amount: Schema.Number },
     success: Schema.Number,
-    primaryKey: (p: { amount: number }) => String(p.amount),
+    id: (p: { amount: number }) => String(p.amount),
   },
   GetCount: {
     success: Schema.Number,
-    primaryKey: () => "singleton",
+    id: () => "singleton",
   },
 });
 
@@ -57,7 +57,7 @@ describe("Actor.fromEntity", () => {
       Save: {
         payload: { data: Schema.String },
         persisted: true,
-        primaryKey: (p: { data: string }) => p.data,
+        id: (p: { data: string }) => p.data,
       },
     });
     const rpc = Persisted._meta.entity.protocol.requests.get("Save")!;
@@ -70,11 +70,11 @@ describe("Actor.fromEntity", () => {
       Op: {
         payload: { id: Schema.String },
         persisted: true,
-        primaryKey: (p: { id: string }) => p.id,
+        id: (p: { id: string }) => p.id,
       },
     });
-    expect(WithPK._meta.definitions["Op"]!.primaryKey).toBeDefined();
-    const pk = WithPK._meta.definitions["Op"]!.primaryKey({ id: "abc" } as never);
+    expect(WithPK._meta.definitions["Op"]!.id).toBeDefined();
+    const pk = WithPK._meta.definitions["Op"]!.id({ id: "abc" } as never);
     expect(pk).toBe("abc");
   });
 
@@ -107,7 +107,7 @@ describe("Actor.fromEntity", () => {
   test("throws on reserved operation names", () => {
     expect(() =>
       Actor.fromEntity("Bad", {
-        _meta: { primaryKey: () => "x" },
+        _meta: { id: () => "x" },
       } as never),
     ).toThrow(/collides with reserved/);
   });
@@ -115,7 +115,7 @@ describe("Actor.fromEntity", () => {
   test("throws on reserved operation name 'ref'", () => {
     expect(() =>
       Actor.fromEntity("Bad", {
-        ref: { primaryKey: () => "x" },
+        ref: { id: () => "x" },
       } as never),
     ).toThrow(/collides with reserved/);
   });
@@ -123,7 +123,7 @@ describe("Actor.fromEntity", () => {
   test("throws on reserved operation name 'peek'", () => {
     expect(() =>
       Actor.fromEntity("Bad", {
-        peek: { primaryKey: () => "x" },
+        peek: { id: () => "x" },
       } as never),
     ).toThrow(/collides with reserved/);
   });
@@ -131,7 +131,7 @@ describe("Actor.fromEntity", () => {
   test("throws on reserved operation name 'waitFor'", () => {
     expect(() =>
       Actor.fromEntity("Bad", {
-        waitFor: { primaryKey: () => "x" },
+        waitFor: { id: () => "x" },
       } as never),
     ).toThrow(/collides with reserved/);
   });
@@ -145,7 +145,7 @@ describe("Actor.fromEntity", () => {
     for (const key of infrastructureKeys) {
       expect(() =>
         Actor.fromEntity("ReservedCheck", {
-          [key]: { primaryKey: () => "x" },
+          [key]: { id: () => "x" },
         } as never),
       ).toThrow(/collides with reserved/);
     }
@@ -229,7 +229,7 @@ describe("scalar payload", () => {
     Say: {
       payload: Schema.String,
       success: Schema.String,
-      primaryKey: (msg: string) => msg,
+      id: (msg: string) => msg,
     },
   });
 
@@ -271,7 +271,7 @@ describe("deliverAt", () => {
       Process: {
         payload: { id: Schema.String, deliverAt: Schema.DateTimeUtc },
         persisted: true,
-        primaryKey: (p: { id: string }) => p.id,
+        id: (p: { id: string }) => p.id,
         deliverAt: (p: { deliverAt: DateTime.DateTime }) => p.deliverAt,
       },
     });
@@ -292,7 +292,7 @@ describe("deliverAt", () => {
     const WithPK = Actor.fromEntity("WithPKPayload", {
       Op: {
         payload: { id: Schema.String },
-        primaryKey: (p: { id: string }) => p.id,
+        id: (p: { id: string }) => p.id,
       },
     });
 
@@ -311,7 +311,7 @@ describe("deliverAt", () => {
       Fire: {
         payload: { when: Schema.DateTimeUtc },
         persisted: true,
-        primaryKey: (p: { when: DateTime.DateTime }) => String(p.when.epochMilliseconds),
+        id: (p: { when: DateTime.DateTime }) => String(p.when.epochMilliseconds),
         deliverAt: (p: { when: DateTime.DateTime }) => p.when,
       },
     });
@@ -341,7 +341,7 @@ describe("deliverAt", () => {
         payload: CustomPayload,
         success: Schema.String,
         persisted: true,
-        primaryKey: (p: { id: string }) => p.id,
+        id: (p: { id: string }) => p.id,
       },
     });
 
@@ -369,7 +369,7 @@ describe("deliverAt", () => {
       Run: {
         payload: ScheduledPayload,
         persisted: true,
-        primaryKey: (p: { id: string }) => p.id,
+        id: (p: { id: string }) => p.id,
       },
     });
 

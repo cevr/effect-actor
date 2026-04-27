@@ -16,6 +16,7 @@ export type {
   HandlerOptions,
   WorkflowDef,
   WorkflowActor,
+  EntityIdReturn,
 } from "./actor.js";
 export { makeStepContext, makeSignal } from "./step.js";
 export type {

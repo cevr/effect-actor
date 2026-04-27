@@ -13,13 +13,13 @@ const PeekableActor = Actor.fromEntity("PeekableActor", {
     payload: { input: Schema.String },
     success: Schema.String,
     persisted: true,
-    primaryKey: (p: { input: string }) => p.input,
+    id: (p: { input: string }) => p.input,
   },
   Fail: {
     payload: { input: Schema.String },
     error: ProcessError,
     persisted: true,
-    primaryKey: (p: { input: string }) => p.input,
+    id: (p: { input: string }) => p.input,
   },
 });
 

@@ -7,7 +7,7 @@ import { Actor } from "../src/index.js";
 const Greeter = Actor.fromWorkflow("Greeter", {
   payload: { name: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { name: string }) => p.name,
+  id: (p: { name: string }) => p.name,
 });
 
 const GreeterTest = Actor.toTestLayer(Greeter, (payload, step) =>
@@ -22,7 +22,7 @@ const GreeterTest = Actor.toTestLayer(Greeter, (payload, step) =>
 const Calculator = Actor.fromWorkflow("Calculator", {
   payload: { x: Schema.Number, y: Schema.Number },
   success: Schema.Number,
-  idempotencyKey: (p: { x: number; y: number }) => `${p.x}+${p.y}`,
+  id: (p: { x: number; y: number }) => `${p.x}+${p.y}`,
 });
 
 const CalculatorTest = Actor.toTestLayer(Calculator, (payload, step) =>
@@ -40,7 +40,7 @@ const CalculatorTest = Actor.toTestLayer(Calculator, (payload, step) =>
 const WithUndo = Actor.fromWorkflow("WithUndo", {
   payload: { input: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { input: string }) => p.input,
+  id: (p: { input: string }) => p.input,
 });
 
 const WithUndoTest = Actor.toTestLayer(WithUndo, (payload, step) =>
@@ -59,7 +59,7 @@ const WithUndoTest = Actor.toTestLayer(WithUndo, (payload, step) =>
 const Sleeper = Actor.fromWorkflow("Sleeper", {
   payload: { ms: Schema.Number },
   success: Schema.String,
-  idempotencyKey: (p: { ms: number }) => String(p.ms),
+  id: (p: { ms: number }) => String(p.ms),
 });
 
 const SleeperTest = Actor.toTestLayer(Sleeper, (payload, step) =>
@@ -79,7 +79,7 @@ const Failable = Actor.fromWorkflow("Failable", {
   payload: { input: Schema.String },
   success: Schema.String,
   error: StepError,
-  idempotencyKey: (p: { input: string }) => p.input,
+  id: (p: { input: string }) => p.input,
 });
 
 const FailableTest = Actor.toTestLayer(Failable, (payload, step) =>
@@ -103,7 +103,7 @@ let retryAttempts = 0;
 const Retrier = Actor.fromWorkflow("Retrier", {
   payload: { id: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
 });
 
 const RetrierTest = Actor.toTestLayer(Retrier, (payload, step) =>
@@ -125,7 +125,7 @@ const RetrierTest = Actor.toTestLayer(Retrier, (payload, step) =>
 const Inspector = Actor.fromWorkflow("Inspector", {
   payload: { id: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
 });
 
 const InspectorTest = Actor.toTestLayer(Inspector, (_payload, step) =>
@@ -140,7 +140,7 @@ const InspectorTest = Actor.toTestLayer(Inspector, (_payload, step) =>
 const WaitTarget = Actor.fromWorkflow("WaitTarget", {
   payload: { id: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
 });
 
 const WaitTargetTest = Actor.toTestLayer(WaitTarget, (payload, step) =>
@@ -155,7 +155,7 @@ const WaitTargetTest = Actor.toTestLayer(WaitTarget, (payload, step) =>
 const Annotated = Actor.fromWorkflow("Annotated", {
   payload: { id: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
   captureDefects: false,
   suspendOnFailure: true,
 });
@@ -274,7 +274,7 @@ describe("WorkflowDef annotations", () => {
 const SignalWorkflow = Actor.fromWorkflow("SignalWorkflow", {
   payload: { id: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
   signals: {
     Approval: { success: Schema.String },
     Cancel: {},
@@ -307,7 +307,7 @@ describe("declarative signals", () => {
     expect(() =>
       Actor.fromWorkflow("BadSignal", {
         payload: { id: Schema.String },
-        idempotencyKey: (p: { id: string }) => p.id,
+        id: (p: { id: string }) => p.id,
         signals: { Run: {} },
       }),
     ).toThrow(/collides with reserved/);
@@ -341,7 +341,7 @@ describe("signal — inside handler", () => {
 const RaceWorkflow = Actor.fromWorkflow("RaceWorkflow", {
   payload: { id: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
 });
 
 const RaceTest = Actor.toTestLayer(RaceWorkflow, (_payload, step) =>
@@ -385,7 +385,7 @@ describe("waitFor — custom options", () => {
 const IdKeyWorkflow = Actor.fromWorkflow("IdKeyWorkflow", {
   payload: { id: Schema.String },
   success: Schema.String,
-  idempotencyKey: (p: { id: string }) => p.id,
+  id: (p: { id: string }) => p.id,
 });
 
 const IdKeyTest = Actor.toTestLayer(IdKeyWorkflow, (_payload, step) =>
