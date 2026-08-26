@@ -136,6 +136,7 @@
             "include": [
               "src/actor.ts",
               "src/actor-state.ts",
+              "src/internal/workflow-actor.ts",
               "src/receipt.ts",
               "src/step.ts",
               "test/flush-redeliver.test.ts",

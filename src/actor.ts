@@ -16,20 +16,15 @@ import type {
   PersistenceError,
 } from "effect/unstable/cluster/ClusterError";
 import type { Rpc, RpcClient, RpcGroup } from "effect/unstable/rpc";
-import { Workflow as UpstreamWorkflow } from "effect/unstable/workflow";
+import type { Workflow as UpstreamWorkflow } from "effect/unstable/workflow";
 import { ActorAddressResolver, ActorAddressResolverLayer } from "./actor-address-resolver.js";
 import { ActorDefect } from "./actor-defect.js";
 import type { MailboxError, ActorMailboxService } from "./actor-mailbox.js";
 import { ActorMailbox, ActorMailboxLayer } from "./actor-mailbox.js";
 import type { Execution } from "effect/unstable/workflow/Workflow";
-import {
-  WorkflowEngine,
-  type WorkflowInstance,
-  layerMemory as workflowEngineLayerMemory,
-} from "effect/unstable/workflow/WorkflowEngine";
+import type { WorkflowEngine, WorkflowInstance } from "effect/unstable/workflow/WorkflowEngine";
 import {
   Context,
-  Cause,
   Data,
   Duration,
   Effect,
@@ -50,21 +45,8 @@ import type {
   WorkflowSignal,
   WorkflowStepContext,
 } from "./step.js";
-import {
-  decideCompensation,
-  decidePendingCompensation,
-  makeSignal,
-  makeWorkflowExecution,
-  pendingCompensation,
-} from "./step.js";
 import type { ExecId, PeekResult } from "./receipt.js";
-import {
-  ExecIdCodec,
-  Pending,
-  Suspended,
-  makeExecId,
-  mapExitToWorkflowPeekResult,
-} from "./receipt.js";
+import { ExecIdCodec } from "./receipt.js";
 import {
   Client,
   clientServiceLayer,
@@ -98,6 +80,12 @@ import {
 import type { ActorStateUnavailable } from "./actor-state.js";
 import * as State from "./state.js";
 import { entityIdCodec } from "./entity-id-codec.js";
+import {
+  compileWorkflowActor,
+  isWorkflowActor as isCompiledWorkflowActor,
+  workflowToLayer as compiledWorkflowToLayer,
+  workflowToTestLayer as compiledWorkflowToTestLayer,
+} from "./internal/workflow-actor.js";
 
 // ── Errors ─────────────────────────────────────────────────────────────────
 
@@ -1183,8 +1171,8 @@ function toLayer(
 ): Layer.Layer<any, any, any> {
   /* eslint-enable typescript-eslint/no-explicit-any */
   const buildOption = Option.fromNullishOr(build);
-  if (isWorkflowActor(actor) && Option.isSome(buildOption)) {
-    return workflowToLayer(actor, buildOption.value as Function);
+  if (isCompiledWorkflowActor(actor) && Option.isSome(buildOption)) {
+    return compiledWorkflowToLayer(actor, buildOption.value as Function);
   }
 
   const actorDefinitions = actor._meta.internalDefinitions ?? actor._meta.definitions;
@@ -1318,8 +1306,8 @@ function toTestLayer(
   options?: ToLayerOptions<unknown, unknown, unknown>,
 ): Layer.Layer<any, any, any> {
   /* eslint-enable typescript-eslint/no-explicit-any */
-  if (isWorkflowActor(actor)) {
-    return workflowToTestLayer(actor, build as Function);
+  if (isCompiledWorkflowActor(actor)) {
+    return compiledWorkflowToTestLayer(actor, build as Function);
   }
 
   const actorDefinitions = actor._meta.internalDefinitions ?? actor._meta.definitions;
@@ -1603,30 +1591,7 @@ const buildActorRef = <Name extends string, Defs extends OperationDefs>(
 
 /* oxlint-enable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noUnknownParameters, effect/noUnsafeDictionaryType */
 
-// ── Workflow reserved keys + signal constructors ─────────────────────────
-
-const WORKFLOW_RESERVED_KEYS = new Set<string>([
-  "_tag",
-  "_meta",
-  "$is",
-  "Context",
-  "compensation",
-  "name",
-  "type",
-  "of",
-  "execute",
-  "send",
-  "peek",
-  "watch",
-  "waitFor",
-  "rerun",
-  "make",
-  "interrupt",
-  "resume",
-  "signal",
-  "executionId",
-  "pipe",
-]);
+// ── Workflow types ────────────────────────────────────────────────────────
 
 type SignalConstructors<
   Payload extends UpstreamWorkflow.AnyStructSchema,
@@ -1879,326 +1844,9 @@ export type WorkflowActor<
   readonly $is: (tag: "Run") => <Value>(value: Value) => boolean;
 };
 
-// ── Actor.fromWorkflow ────────────────────────────────────────────────────
-
-/* oxlint-disable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noUnknownParameters, effect/noUnsafeDictionaryType -- The workflow compiler adapts erased upstream Workflow and Rpc types to the schema-derived public interface. */
-
-const fromWorkflow = <
-  const Name extends string,
-  const Payload extends Schema.Struct.Fields,
-  Success extends Schema.Top = typeof Schema.Void,
-  Error extends Schema.Top = typeof Schema.Never,
-  const Signals extends SignalDefs = {},
->(
-  name: Name,
-  def: WorkflowDef<Payload, Success, Error, Signals>,
-): WorkflowActor<Name, Payload, Success, Error, Signals> => {
-  const workflowOptions: Record<string, unknown> = {
-    payload: def.payload,
-    // upstream UpstreamWorkflow takes `idempotencyKey`; encore exposes `id`.
-    idempotencyKey: def.id,
-  };
-  if (def.success) workflowOptions["success"] = def.success;
-  if (def.error) workflowOptions["error"] = def.error;
-  if (def.suspendedRetrySchedule)
-    workflowOptions["suspendedRetrySchedule"] = def.suspendedRetrySchedule;
-
-  let wf = (UpstreamWorkflow.make as Function)(name, workflowOptions) as UpstreamWorkflow.Workflow<
-    Name,
-    Schema.Struct<Payload>,
-    Success,
-    Error
-  >;
-  const captureDefects = Option.fromNullishOr(def.captureDefects);
-  if (Option.isSome(captureDefects))
-    wf = wf.annotate(UpstreamWorkflow.CaptureDefects, captureDefects.value);
-  const suspendOnFailure = Option.fromNullishOr(def.suspendOnFailure);
-  if (Option.isSome(suspendOnFailure))
-    wf = wf.annotate(UpstreamWorkflow.SuspendOnFailure, suspendOnFailure.value);
-
-  type WfDefs = WorkflowRunDefs<Payload, Success, Error>;
-
-  class WorkflowClientContext extends Context.Service<
-    WorkflowClientContext,
-    ActorClientFactory<Name, WfDefs>
-  >()(`effect-encore/${name}/Client`) {}
-
-  const contextTag = WorkflowClientContext as unknown as Context.Service<
-    ActorClientService<Name, WfDefs>,
-    ActorClientFactory<Name, WfDefs>
-  >;
-
-  const make = (payload: WorkflowPayloadType<Payload>) =>
-    ({ _tag: "Run", ...payload }) as { readonly _tag: "Run" } & WorkflowPayloadType<Payload> &
-      OperationBrand<Name, "Run", Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>;
-
-  // Build declarative signals
-  /* eslint-disable typescript-eslint/no-explicit-any -- signal types are erased at runtime */
-  const signals: Record<string, WorkflowSignal<any, any, any>> = {};
-  /* eslint-enable typescript-eslint/no-explicit-any */
-  for (const [sigName, sigDef] of Object.entries(def.signals ?? {})) {
-    if (WORKFLOW_RESERVED_KEYS.has(sigName)) {
-      // oxlint-disable-next-line effect/noThrowStatement -- This synchronous builder must reject invalid signals at module initialization.
-      throw new ActorDefect({
-        message: `effect-encore: signal "${sigName}" collides with reserved property on workflow "${name}". Reserved: ${[...WORKFLOW_RESERVED_KEYS].join(", ")}`,
-      });
-    }
-    // eslint-disable-next-line typescript-eslint/no-explicit-any
-    signals[sigName] = makeSignal(wf, sigName, {
-      success: sigDef.success,
-      error: sigDef.error,
-    });
-  }
-
-  // Compute the workflow's actual executionId for a payload. Upstream derives
-  // execId as `hash(name-idempotencyKey(payload))` (Workflow.js makeExecutionId);
-  // peek/rerun MUST use that same id or they'll look at the wrong slot.
-  const execIdFor = (payload: WorkflowPayloadType<Payload>): Effect.Effect<string> =>
-    wf.executionId(payload as never);
-
-  type RawPeek = WorkflowPeekResult<Success, Error>;
-
-  const peekAtFn = (
-    executionId: string,
-  ): Effect.Effect<RawPeek, never, WorkflowReadServices<Success, Error>> =>
-    Effect.map(wf.poll(executionId), (result) =>
-      Option.match(result, {
-        onNone: () => Pending,
-        onSome: (value) => {
-          if (value._tag === "Suspended") return Suspended;
-          return mapExitToWorkflowPeekResult(value.exit);
-        },
-      }),
-    );
-
-  const peekFn = (payload: WorkflowPayloadType<Payload>) =>
-    Effect.flatMap(execIdFor(payload), peekAtFn);
-
-  const watchAtFn = (
-    executionId: string,
-    options?: { readonly interval?: Duration.Input },
-  ): Stream.Stream<RawPeek, never, WorkflowReadServices<Success, Error>> =>
-    watchExecution(peekAtFn(executionId), options);
-
-  const watchFn = (
-    payload: WorkflowPayloadType<Payload>,
-    options?: { readonly interval?: Duration.Input },
-  ): Stream.Stream<RawPeek, never, WorkflowReadServices<Success, Error>> =>
-    Stream.unwrap(Effect.map(execIdFor(payload), (executionId) => watchAtFn(executionId, options)));
-
-  const waitForAtFn = (
-    executionId: string,
-    options?: {
-      readonly filter?: (result: RawPeek) => boolean;
-      // eslint-disable-next-line typescript-eslint/no-explicit-any
-      readonly schedule?: Schedule.Schedule<any, unknown>;
-    },
-  ): Effect.Effect<RawPeek, never, WorkflowReadServices<Success, Error>> =>
-    waitForExecution(peekAtFn(executionId), options);
-
-  const waitForFn = (
-    payload: WorkflowPayloadType<Payload>,
-    options?: {
-      readonly filter?: (result: RawPeek) => boolean;
-      // eslint-disable-next-line typescript-eslint/no-explicit-any
-      readonly schedule?: Schedule.Schedule<any, unknown>;
-    },
-  ): Effect.Effect<RawPeek, never, WorkflowReadServices<Success, Error>> =>
-    Effect.flatMap(execIdFor(payload), (executionId) => waitForAtFn(executionId, options));
-
-  const interruptFn = (executionId: string) => wf.interrupt(executionId);
-
-  const resumeFn = (executionId: string) => wf.resume(executionId);
-
-  const compensation = {
-    pending: (executionId: string) => pendingCompensation(wf, executionId),
-    decide: (
-      executionId: string,
-      stepId: string,
-      attempt: number,
-      decision: CompensationDecision,
-    ) => decideCompensation(wf, executionId, stepId, attempt, decision),
-    decidePending: (executionId: string, decision: CompensationDecision) =>
-      decidePendingCompensation(wf, executionId, decision),
-    retry: (executionId: string, stepId: string, attempt: number) =>
-      decideCompensation(wf, executionId, stepId, attempt, "Retry"),
-    stop: (executionId: string, stepId: string, attempt: number) =>
-      decideCompensation(wf, executionId, stepId, attempt, "Stop"),
-  };
-
-  const signal = <
-    S extends Schema.Top = typeof Schema.Void,
-    E extends Schema.Top = typeof Schema.Never,
-  >(
-    signalName: string,
-    options?: { readonly success?: S; readonly error?: E },
-  ): WorkflowSignal<Schema.Struct<Payload>, S, E> => makeSignal(wf, signalName, options);
-
-  const executionIdFn = (payload: WorkflowPayloadType<Payload>) =>
-    Effect.map(wf.executionId(payload as never), (id) => makeExecId(id));
-
-  const pruneFn = (executionId: string) =>
-    Client.use((client) => client.pruneWorkflow(wf, executionId));
-
-  // rerun(payload): WorkflowEngine.interrupt + Client.pruneWorkflow on the workflow's
-  // EntityAddress AND on the DurableClock sub-entity. Wipes the run reply,
-  // every cached activity reply (they all live at the workflow address —
-  // confirmed in MessageStorage.d.ts:401 and ClusterWorkflowEngine.js where
-  // activities use `requestIdForPrimaryKey` against the workflow's entity
-  // address), and any pending step.sleep clock entries (mirror of upstream
-  // `clearClock` in ClusterWorkflowEngine — upstream only clears
-  // the clock when a running fiber observes the InterruptSignal, which
-  // doesn't happen if the workflow is suspended waiting on the clock). Required
-  // so a workflow using step.sleep can be safely rerun without orphan clock
-  // fires. interrupt() is a fiber signal and is a no-op if the workflow has
-  // already completed; clearAddress()
-  // then wipes persisted state regardless. Caveat: rerun-while-running
-  // interrupts the fiber and clears state, but the fiber's wind-down may
-  // queue behind the next execute; cleanup is best-effort eventual.
-  const rerunFn = (
-    payload: WorkflowPayloadType<Payload>,
-  ): Effect.Effect<void, PersistenceError, Client | WorkflowEngine> =>
-    Effect.gen(function* () {
-      const executionId = yield* execIdFor(payload);
-      yield* wf.interrupt(executionId);
-      yield* pruneFn(executionId);
-    });
-
-  const executeFn = (payload: WorkflowPayloadType<Payload>) =>
-    Effect.gen(function* () {
-      const factory = yield* contextTag;
-      const executionId = yield* execIdFor(payload);
-      const ref = yield* factory(executionId);
-      return yield* ref.execute(make(payload) as never);
-    }) as unknown as Effect.Effect<
-      Schema.Schema.Type<Success>,
-      Schema.Schema.Type<Error>,
-      ActorClientService<Name, WfDefs>
-    >;
-
-  const sendFn = (payload: WorkflowPayloadType<Payload>) =>
-    Effect.gen(function* () {
-      const factory = yield* contextTag;
-      const executionId = yield* execIdFor(payload);
-      const ref = yield* factory(executionId);
-      return yield* ref.send(make(payload) as never);
-    }) as unknown as Effect.Effect<
-      ExecId<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>,
-      never,
-      ActorClientService<Name, WfDefs>
-    >;
-
-  const $is =
-    (tag: string) =>
-    <Value>(value: Value): boolean =>
-      Predicate.hasProperty(value, "_tag") && value["_tag"] === tag;
-
-  return {
-    ...signals,
-    _tag: "WorkflowActor" as const,
-    name,
-    type: `Workflow/${name}` as const,
-    _meta: { name, workflow: wf },
-    Context: contextTag,
-    signal,
-    execute: executeFn,
-    send: sendFn,
-    executionId: executionIdFn,
-    peek: peekFn,
-    peekAt: peekAtFn,
-    watch: watchFn,
-    watchAt: watchAtFn,
-    waitFor: waitForFn,
-    waitForAt: waitForAtFn,
-    rerun: rerunFn,
-    prune: pruneFn,
-    interrupt: interruptFn,
-    resume: resumeFn,
-    compensation,
-    make,
-    $is,
-  } as unknown as WorkflowActor<Name, Payload, Success, Error, Signals>;
-};
-
-// ── Workflow-aware toLayer/toTestLayer ─────────────────────────────────────
-
-const isWorkflowActor = <Value>(actor: Value): boolean =>
-  Predicate.hasProperty(actor, "_tag") && actor["_tag"] === "WorkflowActor";
-
-/* eslint-disable typescript-eslint/no-explicit-any -- workflow toLayer needs dynamic dispatch */
-const wrapWorkflowHandler = (actor: WorkflowActor<any, any, any, any>, handler: Function) => {
-  const wf = actor._meta.workflow;
-  return (payload: any, executionId: string) => {
-    const execution = makeWorkflowExecution(wf, executionId);
-    return Effect.catchCause(handler(payload, execution.step), (cause) => {
-      // A pure interrupt ends the run. A mixed failure still needs compensation.
-      if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
-      return execution.compensate(cause).pipe(Effect.andThen(Effect.failCause(cause)));
-    });
-  };
-};
-
-const workflowToLayer = (
-  actor: WorkflowActor<any, any, any, any>,
-  handler: Function,
-): Layer.Layer<any, any, any> => {
-  const wf = actor._meta.workflow;
-  const handlerLayer = wf.toLayer(wrapWorkflowHandler(actor, handler) as any);
-
-  const clientLayer = Layer.effect(
-    actor.Context,
-    Effect.gen(function* () {
-      const engine = yield* WorkflowEngine;
-      return (_entityId: string) => Effect.succeed(buildWorkflowActorRef(actor, engine));
-    }),
-  );
-
-  return layerPassthrough(Layer.merge(handlerLayer, clientLayer));
-};
-
-const workflowToTestLayer = (
-  actor: WorkflowActor<any, any, any, any>,
-  handler: Function,
-): Layer.Layer<any, any, any> => {
-  const wf = actor._meta.workflow;
-  const handlerLayer = wf.toLayer(wrapWorkflowHandler(actor, handler) as any);
-
-  const clientLayer = Layer.effect(
-    actor.Context,
-    Effect.gen(function* () {
-      const engine = yield* WorkflowEngine;
-      return (_entityId: string) => Effect.succeed(buildWorkflowActorRef(actor, engine));
-    }),
-  );
-
-  return Layer.provideMerge(Layer.merge(handlerLayer, clientLayer), workflowEngineLayerMemory);
-};
-
-const buildWorkflowActorRef = (
-  actor: WorkflowActor<any, any, any, any>,
-  engine: WorkflowEngine["Service"],
-): ActorRef<any, any> => {
-  const wf = actor._meta.workflow;
-
-  return {
-    execute: (op: { readonly _tag: string; readonly [key: string]: unknown }) => {
-      const { _tag: _, ...payload } = op;
-      return wf.execute(payload as any).pipe(Effect.provideService(WorkflowEngine, engine));
-    },
-    send: (op: { readonly _tag: string; readonly [key: string]: unknown }) => {
-      const { _tag: _, ...payload } = op;
-      return Effect.map(
-        wf
-          .execute(payload as any, { discard: true })
-          .pipe(Effect.provideService(WorkflowEngine, engine)) as Effect.Effect<string>,
-        (execId) => makeExecId(execId),
-      );
-    },
-  } as ActorRef<any, any>;
-};
-/* eslint-enable typescript-eslint/no-explicit-any */
-
 // ── Escape hatch: raw Rpc definitions ──────────────────────────────────────
+
+/* oxlint-disable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening -- Raw Rpc and protocol transforms preserve upstream generic evidence through this explicit escape hatch. */
 
 export const fromRpcs = <const Name extends string, const Rpcs extends ReadonlyArray<Rpc.Any>>(
   name: Name,
@@ -2287,7 +1935,7 @@ export const Actor = {
   Client,
   ClientLayer,
   fromEntity,
-  fromWorkflow,
+  fromWorkflow: compileWorkflowActor,
   fromRpcs,
   provideLayerBuildContext,
   withProtocol,
