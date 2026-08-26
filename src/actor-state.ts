@@ -25,7 +25,21 @@ interface ActorStateHandle<StateValue, Error = never, Requirements = never> {
 
 type AnyActorStateHandle = ActorStateHandle<unknown, unknown, unknown>;
 
-export interface ActorStateRegistryShape {
+function eraseActorStateHandle<StateValue, Error, Requirements>(
+  handle: ActorStateHandle<StateValue, Error, Requirements>,
+): AnyActorStateHandle;
+function eraseActorStateHandle(handle: AnyActorStateHandle): AnyActorStateHandle {
+  return handle;
+}
+
+function restoreActorStateHandle<StateValue, Error, Requirements>(
+  handle: AnyActorStateHandle,
+): ActorStateHandle<StateValue, Error, Requirements>;
+function restoreActorStateHandle(handle: AnyActorStateHandle): AnyActorStateHandle {
+  return handle;
+}
+
+export interface ActorStateRegistryService {
   readonly register: (
     address: EntityAddress.EntityAddress,
     handle: AnyActorStateHandle,
@@ -42,14 +56,14 @@ export interface ActorStateRegistryShape {
 
 export class ActorStateRegistry extends Context.Service<
   ActorStateRegistry,
-  ActorStateRegistryShape
+  ActorStateRegistryService
 >()("effect-encore/actor-state/ActorStateRegistry") {
   static Live: Layer.Layer<ActorStateRegistry> = Layer.effect(
     ActorStateRegistry,
     Effect.gen(function* () {
       const entries = yield* Ref.make<ReadonlyMap<string, AnyActorStateHandle>>(new Map());
 
-      return {
+      return ActorStateRegistry.of({
         register: (address, handle) =>
           Ref.update(entries, (current) => {
             const next = new Map(current);
@@ -67,8 +81,8 @@ export class ActorStateRegistry extends Context.Service<
         get: (address) =>
           Ref.get(entries).pipe(
             Effect.flatMap((current) => {
-              const handle = current.get(addressKey(address));
-              if (handle === undefined) {
+              const handle = Option.fromNullishOr(current.get(addressKey(address)));
+              if (Option.isNone(handle)) {
                 return Effect.fail(
                   new ActorStateUnavailable({
                     entityType: String(address.entityType),
@@ -76,7 +90,7 @@ export class ActorStateRegistry extends Context.Service<
                   }),
                 );
               }
-              return Effect.succeed(handle);
+              return Effect.succeed(handle.value);
             }),
           ),
         list: (entityType) =>
@@ -89,7 +103,7 @@ export class ActorStateRegistry extends Context.Service<
               }),
             ),
           ),
-      };
+      });
     }),
   );
 }
@@ -100,11 +114,11 @@ export const registerState = <A, Error = never, Requirements = never>(
   Effect.gen(function* () {
     const registry = yield* ActorStateRegistry;
     const address = yield* CurrentAddress;
-    const handle: ActorStateHandle<A, Error, Requirements> = {
+    const handle = {
       get: State.get(state),
       watch: State.changes(state),
-    };
-    const erased = handle as AnyActorStateHandle;
+    } satisfies ActorStateHandle<A, Error, Requirements>;
+    const erased = eraseActorStateHandle(handle);
     yield* registry.register(address, erased);
     yield* Effect.addFinalizer(() => registry.deregister(address, erased));
   });
@@ -114,8 +128,9 @@ export const stateOf = <State, Error = never, Requirements = never>(
 ): Effect.Effect<State, Error | ActorStateUnavailable, ActorStateRegistry | Requirements> =>
   Effect.gen(function* () {
     const registry = yield* ActorStateRegistry;
-    const handle = yield* registry.get(address);
-    return yield* handle.get as Effect.Effect<State, Error, Requirements>;
+    const erased = yield* registry.get(address);
+    const handle = restoreActorStateHandle<State, Error, Requirements>(erased);
+    return yield* handle.get;
   });
 
 export const watchStateOf = <State, Error = never, Requirements = never>(
@@ -124,8 +139,9 @@ export const watchStateOf = <State, Error = never, Requirements = never>(
   Stream.unwrap(
     Effect.gen(function* () {
       const registry = yield* ActorStateRegistry;
-      const handle = yield* registry.get(address);
-      return handle.watch as Stream.Stream<State, Error, Requirements>;
+      const erased = yield* registry.get(address);
+      const handle = restoreActorStateHandle<State, Error, Requirements>(erased);
+      return handle.watch;
     }),
   );
 
@@ -160,9 +176,12 @@ export const waitForStateOf = <State, Error = never, Requirements = never>(
 const addressKey = (address: EntityAddress.EntityAddress): string =>
   `${String(address.entityType)}\x00${String(address.entityId)}`;
 
-const parseAddressKey = (
-  key: string,
-): { readonly entityType: string; readonly entityId: string } => {
+interface AddressKeyParts {
+  readonly entityType: string;
+  readonly entityId: string;
+}
+
+const parseAddressKey = (key: string): AddressKeyParts => {
   const first = key.indexOf("\x00");
   if (first < 0) {
     return { entityType: key, entityId: "" };

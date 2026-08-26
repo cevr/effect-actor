@@ -53,10 +53,10 @@ export class MailboxError extends Data.TaggedError("effect-encore/actor-mailbox/
   readonly cause: unknown;
 }> {}
 
-// ─── Shape ──────────────────────────────────────────────────────────────────
+// ─── Service ────────────────────────────────────────────────────────────────
 
 /* eslint-disable typescript-eslint/no-explicit-any -- Message.OutgoingRequest is type-erased at the dispatch surface */
-export interface ActorMailboxShape {
+export interface ActorMailboxService {
   readonly send: (
     request: Message.OutgoingRequest<Rpc.Any>,
   ) => Effect.Effect<
@@ -72,7 +72,7 @@ export interface ActorMailboxShape {
 
 // ─── Tag ────────────────────────────────────────────────────────────────────
 
-export class ActorMailbox extends Context.Service<ActorMailbox, ActorMailboxShape>()(
+export class ActorMailbox extends Context.Service<ActorMailbox, ActorMailboxService>()(
   "effect-encore/actor-mailbox/ActorMailbox",
 ) {}
 
@@ -97,15 +97,10 @@ const fromConfig: Layer.Layer<ActorMailbox, never, MessageStorage.MessageStorage
   Effect.gen(function* () {
     const storage = yield* MessageStorage.MessageStorage;
 
-    return {
+    return ActorMailbox.of({
       send: (request) =>
         Effect.gen(function* () {
-          /* eslint-disable typescript-eslint/no-explicit-any -- Rpc.Any erases annotations; mirror of upstream Sharding sendOutgoing persisted gate */
-          const isPersisted = Context.get(
-            (request.rpc as any).annotations,
-            ClusterSchema.Persisted,
-          );
-          /* eslint-enable typescript-eslint/no-explicit-any */
+          const isPersisted = Context.get(request.rpc.annotations, ClusterSchema.Persisted);
           if (!isPersisted) {
             return yield* new MailboxError({
               cause: new ActorDefect({
@@ -128,7 +123,7 @@ const fromConfig: Layer.Layer<ActorMailbox, never, MessageStorage.MessageStorage
           // OutgoingRequest branch.
           void result;
         }),
-    };
+    });
   }),
 );
 
@@ -143,12 +138,12 @@ const fromSharding: Layer.Layer<ActorMailbox, never, Sharding.Sharding> = Layer.
   Effect.gen(function* () {
     const sharding = yield* Sharding.Sharding;
 
-    return {
+    return ActorMailbox.of({
       send: (request) =>
         sharding
           .sendOutgoing(request, true)
           .pipe(Effect.catchTag("AlreadyProcessingMessage", () => Effect.void)),
-    };
+    });
   }),
 );
 
@@ -169,4 +164,4 @@ const fromSharding: Layer.Layer<ActorMailbox, never, Sharding.Sharding> = Layer.
 export const ActorMailboxLayer = {
   fromConfig,
   fromSharding,
-} as const;
+};

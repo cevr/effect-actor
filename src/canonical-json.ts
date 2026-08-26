@@ -1,13 +1,14 @@
 import { Crypto, Effect, Encoding, Order, Schema } from "effect";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
+const isJsonObject = Schema.is(Schema.JsonObject);
 const textEncoder = new TextEncoder();
 const isJsonArray = (value: Schema.Json): value is Schema.JsonArray => Array.isArray(value);
 
 /** Encodes JSON with recursive UTF-16 object-key ordering. */
 export const canonicalJsonString = (value: Schema.Json): string => {
   if (isJsonArray(value)) return `[${value.map(canonicalJsonString).join(",")}]`;
-  if (value === null || typeof value !== "object") return encodeJson(value);
+  if (!isJsonObject(value)) return encodeJson(value);
   return `{${Object.entries(value)
     .sort(([left], [right]) => Order.String(left, right))
     .map(([key, entry]) => `${encodeJson(key)}:${canonicalJsonString(entry)}`)

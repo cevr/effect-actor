@@ -41,7 +41,7 @@
  *   and `peek / flush / redeliver / pruneWorkflow / withTransaction` operate over its bundled storage.
  */
 import type { Schema } from "effect";
-import { Context, Effect, Layer, Option } from "effect";
+import { Context, Effect, Layer, Option, Predicate } from "effect";
 import {
   ClusterSchema,
   type Entity as ClusterEntity,
@@ -65,13 +65,13 @@ import type { Rpc, RpcClient } from "effect/unstable/rpc";
 import {
   ActorAddressResolver,
   ActorAddressResolverLayer,
-  type ActorAddressResolverShape,
+  type ActorAddressResolverService,
 } from "./actor-address-resolver.js";
 import {
   ActorMailbox,
   ActorMailboxLayer,
   MailboxError,
-  type ActorMailboxShape,
+  type ActorMailboxService,
 } from "./actor-mailbox.js";
 import { ActorSenderLayer } from "./actor-sender.js";
 import { ActorDefect } from "./actor-defect.js";
@@ -79,9 +79,50 @@ import { type ExecId, type PeekResult, type ReplyDefs, peekStoredReply } from ".
 import type { Invocation } from "./operation.js";
 import { isOpaquePayload } from "./operation.js";
 
+interface ErasedRequestOptions {
+  readonly requestId: Snowflake.Snowflake;
+  readonly address: EntityAddress.EntityAddress;
+  readonly tag: string;
+  readonly payload: unknown;
+  readonly headers: Headers.Headers;
+}
+
+function makeErasedRequest(options: ErasedRequestOptions): Envelope.Request<Rpc.AnyWithProps>;
+function makeErasedRequest(options: ErasedRequestOptions): unknown {
+  return Reflect.apply(Envelope.makeRequest, Envelope, [options]);
+}
+
+interface ErasedOutgoingRequestOptions {
+  readonly rpc: Rpc.AnyWithProps;
+  readonly context: Context.Context<never>;
+  readonly envelope: Envelope.Request<Rpc.AnyWithProps>;
+  readonly lastReceivedReply: Option.Option<never>;
+  readonly respond: () => Effect.Effect<void>;
+  readonly annotations: Context.Context<never>;
+}
+
+function makeErasedOutgoingRequest(
+  options: ErasedOutgoingRequestOptions,
+): Message.OutgoingRequest<Rpc.Any>;
+function makeErasedOutgoingRequest(options: ErasedOutgoingRequestOptions): unknown {
+  return Reflect.construct(Message.OutgoingRequest, [options]);
+}
+
+function eraseTestRpcEffect<Candidate>(candidate: Candidate): Effect.Effect<void>;
+function eraseTestRpcEffect<Candidate>(candidate: Candidate): unknown {
+  if (!Effect.isEffect(candidate)) {
+    return Effect.die(
+      new ActorDefect({
+        message: "effect-encore test mailbox: rpc did not return an Effect",
+      }),
+    );
+  }
+  return candidate;
+}
+
 // ── Address helper ─────────────────────────────────────────────────────────
 export const resolveEntityAddress = (
-  resolver: ActorAddressResolverShape,
+  resolver: ActorAddressResolverService,
   // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs erased
   entity: ClusterEntity.Entity<string, any>,
   actorId: string,
@@ -111,30 +152,27 @@ export const buildOutgoingRequestForSend = (
         }),
       );
     }
-    // eslint-disable-next-line typescript-eslint/no-explicit-any -- payloadSchema type-erased
-    const payloadSchema = rpc.payloadSchema as Schema.Top;
+    const payloadSchema: Schema.Top = rpc.payloadSchema;
 
-    let payload: unknown;
+    let payload;
     if (!definition.payload) {
       // Zero-payload op. compileRpc still creates an EmptyPayloadClass.
-      // eslint-disable-next-line typescript-eslint/no-explicit-any -- class constructor
-      payload = new (payloadSchema as any)({});
+      payload = payloadSchema.make({});
     } else if (isOpaquePayload(definition.payload)) {
       payload = operation["_payload"];
     } else {
       const { _tag: _t, ...fields } = operation;
       void _t;
-      // eslint-disable-next-line typescript-eslint/no-explicit-any -- class constructor
-      payload = new (payloadSchema as any)(fields);
+      payload = payloadSchema.make(fields);
     }
 
     const fiberContext = yield* Effect.context<never>();
 
-    const envelope = Envelope.makeRequest({
+    const envelope = makeErasedRequest({
       requestId: snowflakeGen.nextUnsafe(),
       address,
-      tag: tag as never,
-      payload: payload as never,
+      tag,
+      payload,
       headers: Headers.empty,
     });
 
@@ -145,16 +183,13 @@ export const buildOutgoingRequestForSend = (
     // and applying it to the envelope. The Persisted gate at sendOutgoing reads
     // `message.annotations` for OutgoingRequest specifically — `Context.empty()`
     // here would silently route persisted requests as non-persisted.
-    // eslint-disable-next-line typescript-eslint/no-explicit-any -- annotations type-erased
-    const rpcAnnotations = rpc.annotations as Context.Context<never>;
+    const rpcAnnotations: Context.Context<never> = rpc.annotations;
     const dynamicFn = Context.get(rpcAnnotations, ClusterSchema.Dynamic);
-    // eslint-disable-next-line typescript-eslint/no-explicit-any -- envelope shape erased through Dynamic
-    const annotations = dynamicFn(rpcAnnotations, envelope as any);
+    const annotations = dynamicFn(rpcAnnotations, envelope);
 
-    return new Message.OutgoingRequest({
+    return makeErasedOutgoingRequest({
       rpc,
-      // eslint-disable-next-line typescript-eslint/no-explicit-any -- mirror of Sharding.makeClient
-      context: fiberContext as any,
+      context: fiberContext,
       envelope,
       lastReceivedReply: Option.none(),
       respond: () => Effect.void,
@@ -168,24 +203,24 @@ export const buildOutgoingRequestForSend = (
 // production hosts use the real factories.
 export const makeTestMailboxImpl = (
   makeClient: (entityId: string) => Effect.Effect<RpcClient.RpcClient<Rpc.Any, never>>,
-): ActorMailboxShape => ({
+): ActorMailboxService => ({
   send: (request) =>
     Effect.gen(function* () {
       const envelope = request.envelope;
-      const entityId = envelope.address.entityId as string;
+      const entityId: string = envelope.address.entityId;
       const tag = envelope.tag;
       const payload = envelope.payload;
       const rpcClient = yield* makeClient(entityId);
-      // eslint-disable-next-line typescript-eslint/no-explicit-any -- rpcClient type-erased
-      const fn = (rpcClient as unknown as Record<string, Function>)[tag];
-      if (!fn) {
+      const fn = Reflect.get(rpcClient, tag);
+      if (!Predicate.isFunction(fn)) {
         return yield* new MailboxError({
           cause: new ActorDefect({
             message: `effect-encore test mailbox: unknown rpc "${String(tag)}" on entity "${String(envelope.address.entityType)}"`,
           }),
         });
       }
-      yield* fn(payload, { discard: true }) as Effect.Effect<void>;
+      const result = Reflect.apply(fn, rpcClient, [payload, { discard: true }]);
+      yield* eraseTestRpcEffect(result);
     }),
 });
 
@@ -204,7 +239,7 @@ export type ClientSendError =
   | EntityNotAssignedToRunner;
 
 /* eslint-disable typescript-eslint/no-explicit-any -- entity Rpcs are type-erased at the transport surface */
-export interface ClientShape {
+export interface ClientService {
   /**
    * Resolve the destination address for `entityId` via the Client's internal
    * `ActorAddressResolver` strategy (ADR-0002: resolution is internal, not a
@@ -242,7 +277,7 @@ export interface ClientShape {
   ) => Effect.Effect<void, PersistenceError>;
   /** Remove one workflow execution and its durable clock state. */
   readonly pruneWorkflow: (
-    workflow: Parameters<ActorAddressResolverShape["resolveWorkflow"]>[0],
+    workflow: Parameters<ActorAddressResolverService["resolveWorkflow"]>[0],
     executionId: string,
   ) => Effect.Effect<void, PersistenceError>;
   /** Run storage work in one transaction owned by this Client. */
@@ -250,7 +285,7 @@ export interface ClientShape {
 }
 /* eslint-enable typescript-eslint/no-explicit-any */
 
-export class Client extends Context.Service<Client, ClientShape>()("effect-encore/client") {}
+export class Client extends Context.Service<Client, ClientService>()("effect-encore/client") {}
 
 /**
  * Build the deep `Client` service over the wired transport Tags. Pulls the
@@ -259,7 +294,7 @@ export class Client extends Context.Service<Client, ClientShape>()("effect-encor
  * empty requirement channel — the deps are captured in the closure.
  */
 const makeClientService: Effect.Effect<
-  ClientShape,
+  ClientService,
   never,
   ActorMailbox | ActorAddressResolver | Snowflake.Generator | MessageStorage.MessageStorage
 > = Effect.gen(function* () {
@@ -267,10 +302,10 @@ const makeClientService: Effect.Effect<
   const resolver = yield* ActorAddressResolver;
   const snowflakeGen = yield* Snowflake.Generator;
   const storage = yield* MessageStorage.MessageStorage;
-  const resolve: ClientShape["resolve"] = (entity, entityId) =>
+  const resolve: ClientService["resolve"] = (entity, entityId) =>
     resolveEntityAddress(resolver, entity, entityId);
 
-  return {
+  return Client.of({
     resolve,
     send: (invocation) =>
       Effect.gen(function* () {
@@ -298,7 +333,7 @@ const makeClientService: Effect.Effect<
           ),
         ),
     withTransaction: storage.withTransaction,
-  };
+  });
 });
 
 // ── Adapters ──────────────────────────────────────────────────────────────
@@ -401,4 +436,4 @@ export const layer = {
   fromSharding,
   memory,
   test,
-} as const;
+};

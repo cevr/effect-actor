@@ -1,5 +1,5 @@
 import type { DateTime } from "effect";
-import { Schema } from "effect";
+import { Option, Predicate, Schema } from "effect";
 import type { Entity as ClusterEntity } from "effect/unstable/cluster";
 import type { ExecId } from "./receipt.js";
 import { ExecIdCodec } from "./receipt.js";
@@ -17,6 +17,15 @@ export interface OperationDef {
 
 export type OperationDefs = Record<string, OperationDef>;
 
+const EntityIdReturnSchema = Schema.Union([
+  Schema.String,
+  Schema.Struct({
+    entityId: Schema.String,
+    primaryKey: Schema.optionalKey(Schema.String),
+  }),
+]);
+const isString = Schema.is(Schema.String);
+
 export interface OperationIdentity {
   readonly entityId: string;
   readonly primaryKey: string;
@@ -29,59 +38,75 @@ export interface Invocation {
   readonly tag: string;
   readonly definition: OperationDef;
   readonly payload: unknown;
-  readonly operation: { readonly _tag: string; readonly [key: string]: unknown };
+  readonly operation: OperationValue;
   readonly identity: OperationIdentity;
 }
 
-export const isOpaquePayload = (payload: unknown): boolean =>
-  Schema.isSchema(payload) && !("fields" in (payload as object));
+export interface OperationValue {
+  readonly _tag: string;
+  readonly _payload?: unknown;
+}
 
-export const resolveId = (
-  definition: OperationDef | undefined,
-  payload: unknown,
+export const isOpaquePayload = <Payload>(payload: Payload): boolean =>
+  Schema.isSchema(payload) && !Predicate.hasProperty(payload, "fields");
+
+export const resolveId = <Payload>(
+  definition: OperationDef | void,
+  payload: Payload,
   fallbackTag: string,
-): { readonly entityId: string; readonly primaryKey: string } => {
+): OperationIdentityBase => {
   const id = definition?.id;
-  if (id === undefined) {
+  if (!id) {
     return { entityId: fallbackTag, primaryKey: fallbackTag };
   }
-  const result = id(payload as never);
-  if (typeof result === "string") {
+  const result = Schema.decodeUnknownSync(EntityIdReturnSchema)(Reflect.apply(id, id, [payload]));
+  if (isString(result)) {
     return { entityId: result, primaryKey: result };
   }
   return { entityId: result.entityId, primaryKey: result.primaryKey ?? result.entityId };
 };
 
-export const makeOperationValue = (
-  definition: OperationDef | undefined,
+interface OperationIdentityBase {
+  readonly entityId: string;
+  readonly primaryKey: string;
+}
+
+export const makeOperationValue = <Payload>(
+  definition: OperationDef | void,
   tag: string,
-  payload: unknown,
-): { readonly _tag: string; readonly [key: string]: unknown } => {
-  if (definition?.payload !== undefined && isOpaquePayload(definition.payload)) {
+  payload: Payload,
+): OperationValue => {
+  const payloadSchema = Option.fromNullishOr(definition?.payload);
+  if (Option.isSome(payloadSchema) && isOpaquePayload(payloadSchema.value)) {
     return { _tag: tag, _payload: payload };
   }
-  if (payload !== null && typeof payload === "object") {
+  if (Predicate.isObjectOrArray(payload)) {
     return Object.assign(Object.create(Object.getPrototypeOf(payload)), payload, { _tag: tag });
   }
   return { _tag: tag };
 };
 
 export const payloadFromOperation = (
-  definition: OperationDef | undefined,
-  operation: { readonly _tag: string; readonly [key: string]: unknown },
+  definition: OperationDef | void,
+  operation: OperationValue,
 ): unknown => {
-  if (definition?.payload !== undefined && isOpaquePayload(definition.payload)) {
+  const payloadSchema = Option.fromNullishOr(definition?.payload);
+  if (
+    Option.isSome(payloadSchema) &&
+    isOpaquePayload(payloadSchema.value) &&
+    Predicate.hasProperty(operation, "_payload")
+  ) {
     return operation["_payload"];
   }
   return operation;
 };
 
-export const compileInvocation = (
+export const compileInvocation = <Payload>(
   // eslint-disable-next-line typescript-eslint/no-explicit-any -- Entity protocols are type-erased inside transport.
   entity: ClusterEntity.Entity<string, any>,
   tag: string,
   definition: OperationDef,
-  payload: unknown,
+  payload: Payload,
 ): Invocation => {
   const operation = makeOperationValue(definition, tag, payload);
   const { entityId, primaryKey } = resolveId(definition, payload, tag);

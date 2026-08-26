@@ -16,8 +16,10 @@ export type ExecId<Success = unknown, Error = unknown> = string & {
   };
 };
 
-export const makeExecId = <S = unknown, E = unknown>(id: string): ExecId<S, E> =>
-  id as ExecId<S, E>;
+export function makeExecId<S = unknown, E = unknown>(id: string): ExecId<S, E>;
+export function makeExecId(id: string): string {
+  return id;
+}
 
 // ── ExecIdCodec — single mint/parse boundary ─────────────────────────────
 //
@@ -142,20 +144,29 @@ export interface ReplyDef {
 
 export type ReplyDefs = Record<string, ReplyDef>;
 
+function eraseSchemaDecodingServices(
+  effect: Effect.Effect<unknown, unknown, unknown>,
+): Effect.Effect<unknown, unknown>;
+function eraseSchemaDecodingServices(
+  effect: Effect.Effect<unknown, unknown, unknown>,
+): Effect.Effect<unknown, unknown, unknown> {
+  return effect;
+}
+
 /**
  * Decode `value` through `schema` if present. On decode failure the raw value
  * is returned unchanged (the reply was already validated on the wire; this is
  * a best-effort typed-view, not a gate).
  */
-export const decodeValue = (
-  schema: Schema.Top | undefined,
-  value: unknown,
+export const decodeValue = <Input>(
+  schema: Schema.Top | void,
+  value: Input,
 ): Effect.Effect<unknown> => {
   if (!schema) return Effect.succeed(value);
   // Decoding is best-effort: an undecodable value falls back to the raw input.
   // The schema is type-erased here, so its decoding services are unknown; the
   // assertion drops them because callers never supply them.
-  const decode = Schema.decodeUnknownEffect(schema)(value) as Effect.Effect<unknown, unknown>;
+  const decode = eraseSchemaDecodingServices(Schema.decodeUnknownEffect(schema)(value));
   return Effect.map(
     Effect.option(decode),
     Option.getOrElse(() => value),
@@ -237,8 +248,9 @@ export const peekStoredReply = (
     if (Option.isNone(maybeRequestId)) return Pending;
 
     const replies = yield* storage.repliesForUnfiltered([maybeRequestId.value]);
-    const last = replies[replies.length - 1];
-    if (last === undefined || last._tag !== "WithExit") return Pending;
+    const lastOption = Option.fromNullishOr(replies[replies.length - 1]);
+    if (Option.isNone(lastOption) || lastOption.value._tag !== "WithExit") return Pending;
+    const last = lastOption.value;
 
     return yield* mapExitToPeekResult(last.exit, definitions?.[parsed.tag]);
   });

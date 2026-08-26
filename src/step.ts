@@ -102,6 +102,59 @@ export interface StepRunOptions<
   readonly retry?: { readonly times: number };
 }
 
+function restoreStepRunOptions<WorkflowError>(candidate: {
+  readonly do: unknown;
+}): StepRunOptions<Schema.Top, Schema.Top, any, any, WorkflowError>;
+function restoreStepRunOptions(candidate: { readonly do: unknown }): { readonly do: unknown } {
+  return candidate;
+}
+
+function restoreInfallibleEffect(
+  candidate: Effect.Effect<any, any, any>,
+): Effect.Effect<any, never, any>;
+function restoreInfallibleEffect(
+  candidate: Effect.Effect<any, any, any>,
+): Effect.Effect<any, any, any> {
+  return candidate;
+}
+
+function restoreUndo<WorkflowError>(
+  candidate: Function,
+): (value: any, cause: Cause.Cause<WorkflowError>) => Effect.Effect<void, WorkflowError, any>;
+function restoreUndo(candidate: Function): Function {
+  return candidate;
+}
+
+interface ErasedStepRun {
+  (id: string, second: any, third?: any): Effect.Effect<any, any, any>;
+}
+
+function exposeStepRun<WorkflowError extends Schema.Top>(
+  run: ErasedStepRun,
+): WorkflowStepContext<WorkflowError>["run"];
+function exposeStepRun(run: ErasedStepRun): ErasedStepRun {
+  return run;
+}
+
+interface ErasedStepRace {
+  (
+    id: string,
+    steps: Arr.NonEmptyReadonlyArray<{
+      readonly name: string;
+      readonly execute: Effect.Effect<any, any, any>;
+      readonly success?: Schema.Top;
+      readonly error?: Schema.Top;
+    }>,
+  ): Effect.Effect<any, any, any>;
+}
+
+function exposeStepRace<WorkflowError extends Schema.Top>(
+  race: ErasedStepRace,
+): WorkflowStepContext<WorkflowError>["race"];
+function exposeStepRace(race: ErasedStepRace): ErasedStepRace {
+  return race;
+}
+
 // ── WorkflowStepContext ─────────────────────────────────────────────────
 
 export interface WorkflowStepContext<WorkflowError extends Schema.Top> {
@@ -527,7 +580,7 @@ export const makeSignal = <
     tokenFromExecutionId: (executionId: string) =>
       UpstreamDeferred.tokenFromExecutionId(deferred, { workflow: wf, executionId }),
     tokenFromPayload: (payload: Payload["~type.make.in"]) =>
-      UpstreamDeferred.tokenFromPayload(deferred, { workflow: wf, payload: payload as never }),
+      UpstreamDeferred.tokenFromPayload(deferred, { workflow: wf, payload }),
     succeedAt: (executionId, value) =>
       UpstreamDeferred.succeed(deferred, {
         token: UpstreamDeferred.tokenFromExecutionId(deferred, { workflow: wf, executionId }),
@@ -658,10 +711,14 @@ export const makeWorkflowExecution = <
     );
   };
 
-  const runImpl = (id: string, second: unknown, third?: unknown): Effect.Effect<any, any, any> => {
+  const runImpl = <Second, Third>(
+    id: string,
+    second: Second,
+    third?: Third,
+  ): Effect.Effect<any, any, any> => {
     // Arity 2 + second is plain object with `do` → full options
     if (Predicate.hasProperty(second, "do")) {
-      const opts = second as StepRunOptions<any, any, any, any, WorkflowError["Type"]>;
+      const opts = restoreStepRunOptions<WorkflowError["Type"]>(second);
       const activity = UpstreamActivity.make({
         name: id,
         success: opts.success,
@@ -684,11 +741,11 @@ export const makeWorkflowExecution = <
 
     // Arity 3 + third is function → shorthand with undo
     if (Predicate.isFunction(third)) {
-      const execute = second as Effect.Effect<any, never, any>;
-      const undo = third as (
-        value: any,
-        cause: Cause.Cause<WorkflowError["Type"]>,
-      ) => Effect.Effect<void, WorkflowError["Type"], any>;
+      if (!Effect.isEffect(second)) {
+        return Effect.die(new Error("effect-encore/step.run: execute must be an Effect"));
+      }
+      const execute = restoreInfallibleEffect(second);
+      const undo = restoreUndo<WorkflowError["Type"]>(third);
 
       const activity = UpstreamActivity.make({
         name: id,
@@ -700,7 +757,10 @@ export const makeWorkflowExecution = <
     }
 
     // Arity 2 + second is Effect → shorthand
-    const execute = second as Effect.Effect<any, never, any>;
+    if (!Effect.isEffect(second)) {
+      return Effect.die(new Error("effect-encore/step.run: execute must be an Effect"));
+    }
+    const execute = restoreInfallibleEffect(second);
     const activity = UpstreamActivity.make({
       name: id,
       success: Schema.Unknown,
@@ -709,10 +769,22 @@ export const makeWorkflowExecution = <
     return activity;
   };
 
+  const raceImpl = (id: string, steps: Parameters<ErasedStepRace>[1]) => {
+    const activities = Arr.map(steps, (step) =>
+      UpstreamActivity.make({
+        name: `${id}/${step.name}`,
+        success: step.success ?? Schema.Unknown,
+        error: step.error,
+        execute: step.execute,
+      }),
+    );
+    return UpstreamActivity.raceAll(id, activities);
+  };
+
   const step: WorkflowStepContext<WorkflowError> = {
     executionId,
 
-    run: runImpl as WorkflowStepContext<WorkflowError>["run"],
+    run: exposeStepRun<WorkflowError>(runImpl),
 
     sleep: (id, duration, options) =>
       UpstreamClock.sleep({
@@ -721,17 +793,7 @@ export const makeWorkflowExecution = <
         inMemoryThreshold: options?.inMemoryThreshold,
       }),
 
-    race: ((id, steps) => {
-      const activities = Arr.map(steps, (step) =>
-        UpstreamActivity.make({
-          name: `${id}/${step.name}`,
-          success: step.success ?? Schema.Unknown,
-          error: step.error,
-          execute: step.execute,
-        }),
-      );
-      return UpstreamActivity.raceAll(id, activities);
-    }) as WorkflowStepContext<WorkflowError>["race"],
+    race: exposeStepRace<WorkflowError>(raceImpl),
 
     raceSignals: (name, options) => UpstreamDeferred.raceAll({ name, ...options }),
 

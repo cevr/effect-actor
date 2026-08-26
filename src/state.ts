@@ -38,6 +38,10 @@ import { dual } from "effect/Function";
 import type { Inspectable as InspectableInterface } from "effect/Inspectable";
 
 const TypeId = "effect-encore/state/State";
+const Read = Symbol.for("effect-encore/state/State/read");
+const Write = Symbol.for("effect-encore/state/State/write");
+const Changes = Symbol.for("effect-encore/state/State/changes");
+const Lock = Symbol.for("effect-encore/state/State/lock");
 
 /**
  * A view over a state cell with a subscribable change stream.
@@ -48,19 +52,14 @@ const TypeId = "effect-encore/state/State";
  * - `R` — the read/write closures' service requirements
  */
 export interface State<A, E = never, R = never>
-  extends Variance<A, E, R>, Pipeable.Pipeable, InspectableInterface {}
-
-/** Internal mechanics. Public code must use the module functions. */
-interface StateImpl<A, E, R> extends State<A, E, R> {
-  readonly read: Effect.Effect<A, E, R>;
-  readonly write: (value: A) => Effect.Effect<void, E, R>;
-  readonly pubsub: PubSub.PubSub<A>;
-  readonly semaphore: Semaphore.Semaphore;
+  extends Variance<A, E, R>, Pipeable.Pipeable, InspectableInterface {
+  readonly [Read]: Effect.Effect<A, E, R>;
+  readonly [Write]: (value: A) => Effect.Effect<void, E, R>;
+  readonly [Changes]: PubSub.PubSub<A>;
+  readonly [Lock]: Semaphore.Semaphore;
 }
 
-const impl = <A, E, R>(self: State<A, E, R>): StateImpl<A, E, R> => self as StateImpl<A, E, R>;
-
-export const isState = (value: unknown): value is State<unknown, unknown> =>
+export const isState = <Input>(value: Input): value is Input & State<unknown, unknown> =>
   Predicate.hasProperty(value, TypeId);
 
 export interface Variance<A, E, R> {
@@ -80,6 +79,11 @@ const Proto = {
   },
 };
 
+function makeStateObject<A, E, R>(): State<A, E, R>;
+function makeStateObject(): object {
+  return Object.create(Proto);
+}
+
 /**
  * Creates a `State` from `read` and `write` closures over the
  * underlying store. The closures are responsible for any
@@ -98,15 +102,20 @@ export const make = Effect.fnUntraced(function* <A, E, R>(
   const pubsub = yield* PubSub.unbounded<A>({ replay: 1 });
   const initial = yield* read;
   PubSub.publishUnsafe(pubsub, initial);
-  const self: StateImpl<A, E, R> = Object.create(Proto);
-  Object.assign(self, { read, write, pubsub, semaphore: Semaphore.makeUnsafe(1) });
+  const self = makeStateObject<A, E, R>();
+  Object.assign(self, {
+    [Read]: read,
+    [Write]: write,
+    [Changes]: pubsub,
+    [Lock]: Semaphore.makeUnsafe(1),
+  });
   return self;
 });
 
 /**
  * Reads the current value.
  */
-export const get = <A, E, R>(self: State<A, E, R>): Effect.Effect<A, E, R> => impl(self).read;
+export const get = <A, E, R>(self: State<A, E, R>): Effect.Effect<A, E, R> => self[Read];
 
 /**
  * Replaces the value, then publishes it to {@link changes}. Serialized
@@ -115,10 +124,8 @@ export const get = <A, E, R>(self: State<A, E, R>): Effect.Effect<A, E, R> => im
 export const set: {
   <A>(value: A): <E, R>(self: State<A, E, R>) => Effect.Effect<void, E, R>;
   <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<void, E, R>;
-} = dual(
-  2,
-  <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<void, E, R> =>
-    Semaphore.withPermit(impl(self).semaphore, commit(self, value)),
+} = dual(2, <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<void, E, R> =>
+  Semaphore.withPermit(self[Lock], commit(self, value)),
 );
 
 /**
@@ -129,13 +136,11 @@ export const set: {
 export const update: {
   <A>(fn: (a: A) => A): <E, R>(self: State<A, E, R>) => Effect.Effect<void, E, R>;
   <A, E, R>(self: State<A, E, R>, fn: (a: A) => A): Effect.Effect<void, E, R>;
-} = dual(
-  2,
-  <A, E, R>(self: State<A, E, R>, fn: (a: A) => A): Effect.Effect<void, E, R> =>
-    Semaphore.withPermit(
-      impl(self).semaphore,
-      Effect.flatMap(impl(self).read, (a) => commit(self, fn(a))),
-    ),
+} = dual(2, <A, E, R>(self: State<A, E, R>, fn: (a: A) => A): Effect.Effect<void, E, R> =>
+  Semaphore.withPermit(
+    self[Lock],
+    Effect.flatMap(self[Read], (a) => commit(self, fn(a))),
+  ),
 );
 
 /**
@@ -145,16 +150,14 @@ export const update: {
 export const updateAndGet: {
   <A>(fn: (a: A) => A): <E, R>(self: State<A, E, R>) => Effect.Effect<A, E, R>;
   <A, E, R>(self: State<A, E, R>, fn: (a: A) => A): Effect.Effect<A, E, R>;
-} = dual(
-  2,
-  <A, E, R>(self: State<A, E, R>, fn: (a: A) => A): Effect.Effect<A, E, R> =>
-    Semaphore.withPermit(
-      impl(self).semaphore,
-      Effect.flatMap(impl(self).read, (a) => {
-        const next = fn(a);
-        return Effect.as(commit(self, next), next);
-      }),
-    ),
+} = dual(2, <A, E, R>(self: State<A, E, R>, fn: (a: A) => A): Effect.Effect<A, E, R> =>
+  Semaphore.withPermit(
+    self[Lock],
+    Effect.flatMap(self[Read], (a) => {
+      const next = fn(a);
+      return Effect.as(commit(self, next), next);
+    }),
+  ),
 );
 
 /**
@@ -177,8 +180,8 @@ export const modify: {
     fn: (a: A) => readonly [Output, A],
   ): Effect.Effect<Output, E, R> =>
     Semaphore.withPermit(
-      impl(self).semaphore,
-      Effect.flatMap(impl(self).read, (a) => {
+      self[Lock],
+      Effect.flatMap(self[Read], (a) => {
         const [output, next] = fn(a);
         return Effect.as(commit(self, next), output);
       }),
@@ -191,7 +194,7 @@ export const modify: {
  * subsequent publish.
  */
 export const changes = <A, E, R>(self: State<A, E, R>): Stream.Stream<A> =>
-  Stream.fromPubSub(impl(self).pubsub);
+  Stream.fromPubSub(self[Changes]);
 
 /**
  * Publish a value to the change stream as an `Effect`. Does not write
@@ -207,10 +210,8 @@ export const changes = <A, E, R>(self: State<A, E, R>): Stream.Stream<A> =>
 export const publish: {
   <A>(value: A): <E, R>(self: State<A, E, R>) => Effect.Effect<boolean>;
   <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<boolean>;
-} = dual(
-  2,
-  <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<boolean> =>
-    Semaphore.withPermit(impl(self).semaphore, publishDirect(self, value)),
+} = dual(2, <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<boolean> =>
+  Semaphore.withPermit(self[Lock], publishDirect(self, value)),
 );
 
 /**
@@ -219,7 +220,7 @@ export const publish: {
  * not acquire the semaphore — callers are responsible for ordering.
  */
 export const publishUnsafe = <A, E, R>(self: State<A, E, R>, value: A): boolean =>
-  PubSub.publishUnsafe(impl(self).pubsub, value);
+  PubSub.publishUnsafe(self[Changes], value);
 
 /**
  * Publishes to the change stream WITHOUT acquiring the semaphore.
@@ -229,7 +230,7 @@ export const publishUnsafe = <A, E, R>(self: State<A, E, R>, value: A): boolean 
  * with the write order.
  */
 const publishDirect = <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<boolean> =>
-  PubSub.publish(impl(self).pubsub, value);
+  PubSub.publish(self[Changes], value);
 
 /**
  * Writes the value to the backing store and, on success, publishes it
@@ -246,4 +247,4 @@ const publishDirect = <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<b
  *
  */
 const commit = <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<void, E, R> =>
-  Effect.flatMap(impl(self).write(value), () => Effect.asVoid(publishDirect(self, value)));
+  Effect.flatMap(self[Write](value), () => Effect.asVoid(publishDirect(self, value)));

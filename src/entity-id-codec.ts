@@ -43,9 +43,7 @@ export const entityIdCodec = <A extends ReadonlyArray<unknown>, I extends Readon
   return {
     encode: (key) => {
       const encoded = encodeTuple(key);
-      return (encoded as ReadonlyArray<unknown>)
-        .map((part) => encodeURIComponent(String(part)))
-        .join(SEPARATOR);
+      return encoded.map((part) => encodeURIComponent(String(part))).join(SEPARATOR);
     },
     decode: (entityId) =>
       Effect.flatMap(

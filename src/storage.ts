@@ -27,7 +27,7 @@ import type * as Crypto from "effect/Crypto";
 
 // ─── Shape ──────────────────────────────────────────────────────────────────
 
-export interface MessageDeletionShape {
+export interface MessageDeletionService {
   readonly deleteInvocation: (input: {
     readonly address: EntityAddress.EntityAddress;
     readonly tag: string;
@@ -51,7 +51,7 @@ const sqlTables = (options?: SqlMessageStorageOptions) => {
 
 // ─── Tag ────────────────────────────────────────────────────────────────────
 
-export class MessageDeletion extends Context.Service<MessageDeletion, MessageDeletionShape>()(
+export class MessageDeletion extends Context.Service<MessageDeletion, MessageDeletionService>()(
   "effect-encore/storage/MessageDeletion",
 ) {}
 
@@ -67,7 +67,7 @@ export const fromMessageStorage = (
       requestId: Snowflake.Snowflake,
     ) => Effect.Effect<void, PersistenceError>;
   },
-): MessageDeletionShape => ({
+): MessageDeletionService => ({
   deleteInvocation: ({ address, tag, primaryKey }) =>
     Effect.gen(function* () {
       const requestId = yield* storage.requestIdForPrimaryKey({ address, tag, id: primaryKey });

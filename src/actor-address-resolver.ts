@@ -39,10 +39,10 @@ import {
 import type { Workflow as UpstreamWorkflow } from "effect/unstable/workflow";
 import { Context, Effect, Layer } from "effect";
 
-// ─── Shape ──────────────────────────────────────────────────────────────────
+// ─── Service ────────────────────────────────────────────────────────────────
 
 /* eslint-disable typescript-eslint/no-explicit-any -- entity Rpcs type-erased at runtime */
-export interface ActorAddressResolverShape {
+export interface ActorAddressResolverService {
   readonly resolveEntity: (
     entity: ClusterEntity.Entity<string, any>,
     entityId: string,
@@ -62,7 +62,7 @@ export interface ActorAddressResolverShape {
 
 export class ActorAddressResolver extends Context.Service<
   ActorAddressResolver,
-  ActorAddressResolverShape
+  ActorAddressResolverService
 >()("effect-encore/actor-address-resolver/ActorAddressResolver") {}
 
 // ─── Internal: hash math (mirror of effect/unstable/cluster's internal hash) ──
@@ -93,7 +93,7 @@ const computeShardId = (
 };
 
 type ResolveShardId = Sharding.Sharding["Service"]["getShardId"];
-type WorkflowValue = Parameters<ActorAddressResolverShape["resolveWorkflow"]>[0];
+type WorkflowValue = Parameters<ActorAddressResolverService["resolveWorkflow"]>[0];
 
 const makeWorkflowResolvers = (getShardId: ResolveShardId) => {
   const resolve = (workflow: WorkflowValue, executionId: string, entityType: string) => {
@@ -148,10 +148,10 @@ const fromConfig: Layer.Layer<ActorAddressResolver, never, ShardingConfig.Shardi
 
       /* eslint-enable typescript-eslint/no-explicit-any */
 
-      return {
+      return ActorAddressResolver.of({
         resolveEntity,
         ...workflowResolvers,
-      };
+      });
     }),
   );
 
@@ -182,10 +182,10 @@ const fromSharding: Layer.Layer<ActorAddressResolver, never, Sharding.Sharding> 
 
     /* eslint-enable typescript-eslint/no-explicit-any */
 
-    return {
+    return ActorAddressResolver.of({
       resolveEntity,
       ...workflowResolvers,
-    };
+    });
   }),
 );
 
@@ -206,4 +206,4 @@ const fromSharding: Layer.Layer<ActorAddressResolver, never, Sharding.Sharding> 
 export const ActorAddressResolverLayer = {
   fromConfig,
   fromSharding,
-} as const;
+};

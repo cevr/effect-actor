@@ -38,7 +38,7 @@ export type {
   StateErrorOf,
   SenderContext,
 } from "./actor.js";
-export type { ActorStateRegistryShape } from "./actor-state.js";
+export type { ActorStateRegistryService } from "./actor-state.js";
 export {
   CompensationDecision,
   CompensationDecisionConflictError,

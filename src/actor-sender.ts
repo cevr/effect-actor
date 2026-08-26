@@ -61,4 +61,4 @@ const layerMemory: Layer.Layer<
 export const ActorSenderLayer = {
   layer,
   layerMemory,
-} as const;
+};
