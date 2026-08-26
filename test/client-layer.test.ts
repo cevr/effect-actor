@@ -21,7 +21,7 @@ import { describe, expect, it } from "effect-bun-test";
 import { Cause, Context, Effect, Exit, Layer, Option, Ref, Schema } from "effect";
 import type { Entity as ClusterEntity } from "effect/unstable/cluster";
 import { Entity, MessageStorage, ShardingConfig, TestRunner } from "effect/unstable/cluster";
-import type { ActorMailboxShape } from "../src/actor-mailbox.js";
+import type { ActorMailboxService } from "../src/actor-mailbox.js";
 import { ActorMailbox, MailboxError } from "../src/actor-mailbox.js";
 import { Actor, Client, ClientLayer } from "../src/index.js";
 import { makeTestMailboxImpl } from "../src/client.js";
@@ -58,8 +58,10 @@ const LiveOnlyActor = Actor.fromEntity("ClientLayerLiveOnly", {
 // Widen to the type-erased entity the Client surface accepts (production casts
 // the same way at actor.ts).
 // eslint-disable-next-line typescript-eslint/no-explicit-any -- Entity name param is invariant
+// oxlint-disable-next-line effect/noAs -- the Client transport seam erases the invariant entity name and RPC union
 const processEntity = ClientActor._meta.entity as ClusterEntity.Entity<string, any>;
 // eslint-disable-next-line typescript-eslint/no-explicit-any
+// oxlint-disable-next-line effect/noAs -- the Client transport seam erases the invariant entity name and RPC union
 const liveOnlyEntity = LiveOnlyActor._meta.entity as ClusterEntity.Entity<string, any>;
 
 const processDefs = ClientActor._meta.internalDefinitions ?? ClientActor._meta.definitions;
@@ -204,7 +206,7 @@ describe("Client.layer.fromSharding", () => {
       );
       expect(terminal._tag).toBe("Failure");
       if (terminal._tag === "Failure") {
-        expect((terminal.error as ProcessError)._tag).toBe("ProcessError");
+        expect(terminal.error).toBeInstanceOf(ProcessError);
       }
     }).pipe(Effect.provide(FromShardingWithHandlers)),
   );
@@ -281,25 +283,25 @@ describe("Actor.toTestLayer (inline test-mailbox composition)", () => {
 // `Client.send`, channeled through the adapter, reaches the INJECTED mailbox),
 // then routes it on through the real per-entity test path via
 // `makeTestMailboxImpl` (the same wrapper `toTestLayer` uses).
+// oxlint-disable-next-line effect/noAs -- upstream toLayer erases this test handler map to never
 const directHandlerLayer = ClientActor._meta.entity.toLayer({
   Process: ({ operation }: { operation: { input: string } }) =>
     Effect.succeed(`processed: ${operation.input}`),
   Fail: () => Effect.fail(ProcessError.make({ message: "bad" })),
 } as never);
 
-const dispatchedRef = Effect.runSync(
-  Ref.make<ReadonlyArray<{ tag: string; entityId: string }>>([]),
-);
+const dispatchedRef = Ref.makeUnsafe<ReadonlyArray<{ tag: string; entityId: string }>>([]);
 
 const injectedMailboxLayer = Layer.effectContext(
   Effect.gen(function* () {
+    // oxlint-disable-next-line effect/noAs -- upstream makeTestClient returns a type-erased client factory
     const makeClient = (yield* Entity.makeTestClient(
       ClientActor._meta.entity,
       directHandlerLayer,
       // eslint-disable-next-line typescript-eslint/no-explicit-any -- makeTestClient return is type-erased; mirrors actor.ts:1515
     )) as (entityId: string) => Effect.Effect<any>;
     const routing = makeTestMailboxImpl(makeClient);
-    const recording: ActorMailboxShape = {
+    const recording: ActorMailboxService = {
       send: (request) =>
         Ref.update(dispatchedRef, (xs) => [
           ...xs,

@@ -23,7 +23,7 @@ import { Workflow as UpstreamWorkflow } from "effect/unstable/workflow";
 import { ActorAddressResolver, ActorAddressResolverLayer } from "./actor-address-resolver.js";
 import { assembleActorRuntime, attachFreshService } from "./actor-runtime.js";
 import { ActorDefect } from "./actor-defect.js";
-import type { MailboxError, ActorMailboxShape } from "./actor-mailbox.js";
+import type { MailboxError, ActorMailboxService } from "./actor-mailbox.js";
 import { ActorMailbox, ActorMailboxLayer } from "./actor-mailbox.js";
 import type { Execution } from "effect/unstable/workflow/Workflow";
 import {
@@ -40,6 +40,7 @@ import {
   Layer,
   Option,
   Pipeable,
+  Predicate,
   PrimaryKey,
   Schedule,
   Schema,
@@ -453,6 +454,17 @@ export type ActorLayerBuildContextExclusions =
   | CurrentRunnerAddress
   | ActorStateRegistry;
 
+function provideCapturedLayerBuildContext<A, E, R>(
+  build: Effect.Effect<A, E, R>,
+  context: Context.Context<Exclude<R, ActorLayerBuildContextExclusions>>,
+): Effect.Effect<A, E, Extract<R, ActorLayerBuildContextExclusions>>;
+function provideCapturedLayerBuildContext<A, E, R>(
+  build: Effect.Effect<A, E, R>,
+  context: Context.Context<Exclude<R, ActorLayerBuildContextExclusions>>,
+): unknown {
+  return Effect.provideContext(build, context);
+}
+
 export const provideLayerBuildContext = <A, E, R>(
   build: Effect.Effect<A, E, R>,
 ): Effect.Effect<
@@ -461,14 +473,7 @@ export const provideLayerBuildContext = <A, E, R>(
   Exclude<R, ActorLayerBuildContextExclusions>
 > =>
   Effect.context<Exclude<R, ActorLayerBuildContextExclusions>>().pipe(
-    Effect.map(
-      (ctx) =>
-        Effect.provideContext(build, ctx) as Effect.Effect<
-          A,
-          E,
-          Extract<R, ActorLayerBuildContextExclusions>
-        >,
-    ),
+    Effect.map((context) => provideCapturedLayerBuildContext(build, context)),
   );
 
 /**
@@ -487,19 +492,19 @@ export interface ActorStateDef {
   readonly error?: Schema.Top;
 }
 
-export type StateOf<S extends ActorStateDef | undefined> = S extends {
+export type StateOf<S extends ActorStateDef | void> = S extends {
   readonly schema: infer Sch extends Schema.Top;
 }
   ? Schema.Schema.Type<Sch>
   : unknown;
 
-export type StateErrorOf<S extends ActorStateDef | undefined> = S extends {
+export type StateErrorOf<S extends ActorStateDef | void> = S extends {
   readonly error: infer E extends Schema.Top;
 }
   ? Schema.Schema.Type<E>
   : never;
 
-export interface FromEntityOptions<S extends ActorStateDef | undefined = undefined> {
+export interface FromEntityOptions<S extends ActorStateDef | void = void> {
   readonly state?: S;
 }
 
@@ -715,10 +720,12 @@ export type EntityActor<
     >;
     readonly $is: <Tag extends keyof Defs & string>(
       tag: Tag,
-    ) => (value: unknown) => value is OperationValue<Name, Tag, Defs[Tag]>;
+    ) => <Value>(value: Value) => value is Value & OperationValue<Name, Tag, Defs[Tag]>;
   };
 
 // ── Compile runtime ────────────────────────────────────────────────────────
+
+/* oxlint-disable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noUnknownParameters, effect/noUnsafeDictionaryType -- This compiler erases schema-specific RPC types once and restores the public generic actor interface through overloads. */
 
 const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any => {
   const options: Record<string, unknown> = {};
@@ -767,7 +774,7 @@ const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any 
 
     (EmptyPayloadClass.prototype as Record<string | symbol, unknown>)[PrimaryKey.symbol] =
       function () {
-        return pkOf(undefined);
+        return pkOf(Schema.Void.make());
       };
 
     options["payload"] = EmptyPayloadClass;
@@ -802,7 +809,7 @@ const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any 
 const rerunImpl = (
   // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs type erased
   entity: ClusterEntity.Entity<string, any>,
-  def: OperationDef | undefined,
+  def: OperationDef | void,
   tag: string,
   payload: unknown,
 ): Effect.Effect<void, PersistenceError, MessageDeletion | ActorAddressResolver> =>
@@ -886,7 +893,7 @@ const makeWaitFor = <S, E, PE, PR>(
 const fromEntity = <
   const Name extends string,
   const Defs extends OperationDefs,
-  const StateDef extends ActorStateDef | undefined = undefined,
+  const StateDef extends ActorStateDef | void = void,
 >(
   name: Name,
   definitions: AssertNoReservedKeys<Defs>,
@@ -945,11 +952,8 @@ const fromEntity = <
 
   const $is =
     (tag: string) =>
-    (value: unknown): boolean =>
-      value != null &&
-      typeof value === "object" &&
-      "_tag" in value &&
-      (value as Record<string, unknown>)["_tag"] === tag;
+    <Value>(value: Value): boolean =>
+      Predicate.hasProperty(value, "_tag") && value["_tag"] === tag;
 
   // eslint-disable-next-line typescript-eslint/no-explicit-any -- Entity<Name> → Entity<string> widening
   const entityAny = entity as unknown as ClusterEntity.Entity<string, any>;
@@ -978,18 +982,18 @@ const fromEntity = <
       return yield* ref.execute(buildOpValue(ACTIVATE_TAG, { entityId }) as never);
     });
 
-  const stateSchema = options?.state?.schema;
-  const errorSchema = options?.state?.error;
+  const stateSchema = Option.fromNullishOr(options?.state?.schema);
+  const errorSchema = Option.fromNullishOr(options?.state?.error);
   const decodeState = (raw: unknown): Effect.Effect<unknown, unknown> => {
-    if (stateSchema === undefined) return Effect.succeed(raw);
-    return Schema.decodeUnknownEffect(stateSchema)(raw) as Effect.Effect<unknown, unknown>;
+    if (Option.isNone(stateSchema)) return Effect.succeed(raw);
+    return Schema.decodeUnknownEffect(stateSchema.value)(raw) as Effect.Effect<unknown, unknown>;
   };
   const decodeFailure = (cause: unknown): Effect.Effect<never, unknown> => {
     // No error schema, or a nullish cause, passes straight through undecoded.
-    if (errorSchema === undefined || cause === undefined || cause === null) {
+    if (Option.isNone(errorSchema) || Option.isNone(Option.fromNullishOr(cause))) {
       return Effect.fail(cause);
     }
-    const decoded = Schema.decodeUnknownEffect(errorSchema)(cause) as Effect.Effect<
+    const decoded = Schema.decodeEffect(errorSchema.value)(cause) as Effect.Effect<
       unknown,
       unknown
     >;
@@ -1005,8 +1009,9 @@ const fromEntity = <
     ActorAddressResolver | ActorStateRegistry | ActorClientService<Name, Defs> | unknown
   > =>
     Effect.gen(function* () {
-      if (stateOptions?.materialize !== undefined) {
-        yield* stateOptions.materialize;
+      const materialize = Option.fromNullishOr(stateOptions?.materialize);
+      if (Option.isSome(materialize)) {
+        yield* materialize.value;
       } else {
         yield* activateFn(entityId);
       }
@@ -1027,8 +1032,9 @@ const fromEntity = <
   > =>
     Stream.unwrap(
       Effect.gen(function* () {
-        if (stateOptions?.materialize !== undefined) {
-          yield* stateOptions.materialize;
+        const materialize = Option.fromNullishOr(stateOptions?.materialize);
+        if (Option.isSome(materialize)) {
+          yield* materialize.value;
         } else {
           yield* activateFn(entityId);
         }
@@ -1050,8 +1056,9 @@ const fromEntity = <
     ActorAddressResolver | ActorStateRegistry | ActorClientService<Name, Defs> | unknown
   > =>
     Effect.gen(function* () {
-      if (stateOptions?.materialize !== undefined) {
-        yield* stateOptions.materialize;
+      const materialize = Option.fromNullishOr(stateOptions?.materialize);
+      if (Option.isSome(materialize)) {
+        yield* materialize.value;
       } else {
         yield* activateFn(entityId);
       }
@@ -1335,8 +1342,9 @@ function toLayer(
   options?: ToLayerOptions<unknown, unknown, unknown>,
 ): Layer.Layer<any, any, any> {
   /* eslint-enable typescript-eslint/no-explicit-any */
-  if (isWorkflowActor(actor) && build !== undefined) {
-    return workflowToLayer(actor, build as Function);
+  const buildOption = Option.fromNullishOr(build);
+  if (isWorkflowActor(actor) && Option.isSome(buildOption)) {
+    return workflowToLayer(actor, buildOption.value as Function);
   }
 
   const actorDefinitions = actor._meta.internalDefinitions ?? actor._meta.definitions;
@@ -1388,12 +1396,12 @@ function toLayer(
   const stateLayer = makeActorStateLayer(actor);
   const controlLayer = makeActorControlLayer(actor);
 
-  if (build === undefined) {
+  if (Option.isNone(buildOption)) {
     const baseLayer = Layer.merge(clientLayer, consumerSupportLayers);
     return assembleActorRuntime(baseLayer, stateLayer, controlLayer);
   }
 
-  const transformed = transformHandlers(build, actorDefinitions, options?.withScope);
+  const transformed = transformHandlers(buildOption.value, actorDefinitions, options?.withScope);
   const handlerLayer = actor._meta.entity.toLayer(transformed as never, {
     spanAttributes: options?.spanAttributes,
     maxIdleTime: options?.maxIdleTime,
@@ -1513,7 +1521,7 @@ function toTestLayer(
           buildActorRef(actor._meta.name, entityId, actorDefinitions, rpcClient),
         );
 
-      const mailboxImpl: ActorMailboxShape = makeTestMailboxImpl(makeClient);
+      const mailboxImpl: ActorMailboxService = makeTestMailboxImpl(makeClient);
 
       return Context.empty().pipe(
         Context.add(actor.Context, factory),
@@ -1630,6 +1638,11 @@ const makeActorStateLayer = <Name extends string, Defs extends OperationDefs, St
 
 // ── Transform handlers from operation-first to request-first ───────────────
 
+const provideHandlerContext = <A, E, R>(
+  body: Effect.Effect<A, E, R>,
+  context: Context.Context<R>,
+): Effect.Effect<A, E> => Effect.provide(body, context);
+
 const transformHandlers = (
   build: unknown,
   definitions?: OperationDefs,
@@ -1637,17 +1650,18 @@ const transformHandlers = (
     address: EntityAddress.EntityAddress,
   ) => Effect.Effect<Context.Context<unknown>, unknown, unknown>,
 ): unknown => {
-  if (build != null && typeof build === "object" && !Effect.isEffect(build)) {
+  if (Predicate.isObject(build) && !Effect.isEffect(build)) {
     const handlers = build as Record<string, Function>;
     const transformed: Record<string, Function> = {};
-    if (definitions?.[ACTIVATE_TAG] !== undefined) {
+    if (Option.isSome(Option.fromNullishOr(definitions?.[ACTIVATE_TAG]))) {
       transformed[ACTIVATE_TAG] = () => Effect.void;
     }
     for (const tag of Object.keys(handlers)) {
       const handler = handlers[tag];
       if (!handler) continue;
-      const def = definitions?.[tag];
-      const opaque = def?.payload !== undefined && isOpaquePayload(def.payload);
+      const def = Option.fromNullishOr(definitions?.[tag]);
+      const payload = Option.flatMap(def, (value) => Option.fromNullishOr(value.payload));
+      const opaque = Option.isSome(payload) && isOpaquePayload(payload.value);
       transformed[tag] = (request: Record<string, unknown>) => {
         const raw = request["payload"];
         const buildOperation = (): Record<string, unknown> => {
@@ -1656,11 +1670,12 @@ const transformHandlers = (
         };
         const operation = buildOperation();
         const body = handler({ operation, request }) as Effect.Effect<unknown, unknown, unknown>;
-        if (withScope === undefined) return body;
+        const scope = Option.fromNullishOr(withScope);
+        if (Option.isNone(scope)) return body;
         return Effect.gen(function* () {
           const address = yield* CurrentAddress;
-          const context = yield* withScope(address);
-          return yield* Effect.provide(body, context);
+          const context = yield* scope.value(address);
+          return yield* provideHandlerContext(body, context);
         });
       };
     }
@@ -1681,23 +1696,25 @@ const buildActorRef = <Name extends string, Defs extends OperationDefs>(
   boundContext?: Context.Context<never>,
 ): ActorRef<Name, Defs> => {
   const client = rpcClient as unknown as Record<string, Function>;
+  const boundContextOption = Option.fromNullishOr(boundContext);
 
   const bind = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> => {
-    if (boundContext === undefined) return effect;
+    if (Option.isNone(boundContextOption)) return effect;
     return Effect.context<never>().pipe(
       Effect.flatMap((currentContext) =>
-        Effect.provideContext(effect, Context.merge(boundContext, currentContext)),
+        Effect.provideContext(effect, Context.merge(boundContextOption.value, currentContext)),
       ),
     ) as Effect.Effect<A, E, R>;
   };
 
   const rpcArg = (
     op: { readonly _tag: string; readonly [key: string]: unknown },
-    def: OperationDef | undefined,
-  ) => {
-    if (!def?.payload) return undefined;
-    if (isOpaquePayload(def.payload)) return op["_payload"];
-    return op;
+    def: OperationDef | void,
+  ): Option.Option<unknown> => {
+    const payload = Option.fromNullishOr(def?.payload);
+    if (Option.isNone(payload)) return Option.none();
+    if (isOpaquePayload(payload.value)) return Option.some(op["_payload"]);
+    return Option.some(op);
   };
 
   return {
@@ -1710,10 +1727,10 @@ const buildActorRef = <Name extends string, Defs extends OperationDefs>(
             message: `effect-encore: unknown operation "${tag}" on actor "${_actorName}"`,
           }),
         );
-      const def = definitions[tag] as OperationDef | undefined;
+      const def = definitions[tag] as OperationDef | void;
       const arg = rpcArg(op, def);
       const call = (): unknown => {
-        if (arg !== undefined) return fn(arg);
+        if (Option.isSome(arg)) return fn(arg.value);
         return fn();
       };
       return bind(call() as Effect.Effect<unknown, unknown, unknown>);
@@ -1727,22 +1744,24 @@ const buildActorRef = <Name extends string, Defs extends OperationDefs>(
             message: `effect-encore: unknown operation "${tag}" on actor "${_actorName}"`,
           }),
         );
-      const def = definitions[tag] as OperationDef | undefined;
+      const def = definitions[tag] as OperationDef | void;
       const arg = rpcArg(op, def);
       const dispatchDiscarded = (): unknown => {
-        if (arg !== undefined) return fn(arg, { discard: true });
-        return fn(undefined, { discard: true });
+        if (Option.isSome(arg)) return fn(arg.value, { discard: true });
+        return fn(Schema.Void.make(), { discard: true });
       };
-      const discardCall = dispatchDiscarded() as
-        | Effect.Effect<unknown, unknown, unknown>
-        | undefined;
+      const discarded = dispatchDiscarded();
+      let discardCall = Effect.void as Effect.Effect<unknown, unknown, unknown>;
+      if (Effect.isEffect(discarded)) discardCall = discarded;
       const pkInput = payloadFromOperation(def, op);
       const { primaryKey } = resolveId(def, pkInput, tag);
       const execId = ExecIdCodec.encode({ entityId: _entityId, tag, primaryKey });
-      return bind(Effect.map(discardCall ?? Effect.void, () => execId));
+      return bind(Effect.map(discardCall, () => execId));
     },
   } as ActorRef<Name, Defs>;
 };
+
+/* oxlint-enable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noUnknownParameters, effect/noUnsafeDictionaryType */
 
 // ── Workflow reserved keys + signal constructors ─────────────────────────
 
@@ -2017,10 +2036,12 @@ export type WorkflowActor<
     payload: WorkflowPayloadType<Payload>,
   ) => { readonly _tag: "Run" } & WorkflowPayloadType<Payload> &
     OperationBrand<Name, "Run", Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>;
-  readonly $is: (tag: "Run") => (value: unknown) => boolean;
+  readonly $is: (tag: "Run") => <Value>(value: Value) => boolean;
 };
 
 // ── Actor.fromWorkflow ────────────────────────────────────────────────────
+
+/* oxlint-disable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noUnknownParameters, effect/noUnsafeDictionaryType -- The workflow compiler adapts erased upstream Workflow and Rpc types to the schema-derived public interface. */
 
 const fromWorkflow = <
   const Name extends string,
@@ -2048,10 +2069,12 @@ const fromWorkflow = <
     Success,
     Error
   >;
-  if (def.captureDefects !== undefined)
-    wf = wf.annotate(UpstreamWorkflow.CaptureDefects, def.captureDefects);
-  if (def.suspendOnFailure !== undefined)
-    wf = wf.annotate(UpstreamWorkflow.SuspendOnFailure, def.suspendOnFailure);
+  const captureDefects = Option.fromNullishOr(def.captureDefects);
+  if (Option.isSome(captureDefects))
+    wf = wf.annotate(UpstreamWorkflow.CaptureDefects, captureDefects.value);
+  const suspendOnFailure = Option.fromNullishOr(def.suspendOnFailure);
+  if (Option.isSome(suspendOnFailure))
+    wf = wf.annotate(UpstreamWorkflow.SuspendOnFailure, suspendOnFailure.value);
 
   type WfDefs = WorkflowRunDefs<Payload, Success, Error>;
 
@@ -2231,11 +2254,8 @@ const fromWorkflow = <
 
   const $is =
     (tag: string) =>
-    (value: unknown): boolean =>
-      value != null &&
-      typeof value === "object" &&
-      "_tag" in value &&
-      (value as Record<string, unknown>)["_tag"] === tag;
+    <Value>(value: Value): boolean =>
+      Predicate.hasProperty(value, "_tag") && value["_tag"] === tag;
 
   return {
     ...signals,
@@ -2266,13 +2286,8 @@ const fromWorkflow = <
 
 // ── Workflow-aware toLayer/toTestLayer ─────────────────────────────────────
 
-const isWorkflowActor = (
-  actor: unknown,
-): actor is WorkflowActor<string, Schema.Struct.Fields, Schema.Top, Schema.Top> =>
-  actor != null &&
-  typeof actor === "object" &&
-  "_tag" in actor &&
-  (actor as Record<string, unknown>)["_tag"] === "WorkflowActor";
+const isWorkflowActor = <Value>(actor: Value): boolean =>
+  Predicate.hasProperty(actor, "_tag") && actor["_tag"] === "WorkflowActor";
 
 /* eslint-disable typescript-eslint/no-explicit-any -- workflow toLayer needs dynamic dispatch */
 const wrapWorkflowHandler = (actor: WorkflowActor<any, any, any, any>, handler: Function) => {
@@ -2445,3 +2460,5 @@ export const Actor = {
   isEntity,
   isWorkflow,
 } as const;
+
+/* oxlint-enable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noUnknownParameters, effect/noUnsafeDictionaryType */
