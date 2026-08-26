@@ -94,9 +94,8 @@ import {
 import {
   ActorStateRegistry,
   listStateEntityIds,
+  makeActorStateObservation,
   registerState,
-  stateOf,
-  watchStateOf,
 } from "./actor-state.js";
 import type { ActorStateUnavailable } from "./actor-state.js";
 import * as State from "./state.js";
@@ -907,15 +906,9 @@ const fromEntity = <
     >;
     return Effect.flatMap(decoded, (value) => Effect.fail(value));
   };
+  const stateObservation = makeActorStateObservation({ decodeState, decodeFailure });
 
-  const getStateFn = (
-    entityId: string,
-    stateOptions?: ActorStateOptions<unknown, unknown>,
-  ): Effect.Effect<
-    unknown,
-    unknown,
-    ActorAddressResolver | ActorStateRegistry | ActorClientService<Name, Defs> | unknown
-  > =>
+  const stateAddress = (entityId: string, stateOptions?: ActorStateOptions<unknown, unknown>) =>
     Effect.gen(function* () {
       const materialize = Option.fromNullishOr(stateOptions?.materialize);
       if (Option.isSome(materialize)) {
@@ -924,11 +917,17 @@ const fromEntity = <
         yield* activateFn(entityId);
       }
       const resolver = yield* ActorAddressResolver;
-      const raw = yield* stateOf(resolveEntityAddress(resolver, entityAny, entityId)).pipe(
-        Effect.catch(decodeFailure),
-      );
-      return yield* decodeState(raw);
+      return resolveEntityAddress(resolver, entityAny, entityId);
     });
+
+  const getStateFn = (
+    entityId: string,
+    stateOptions?: ActorStateOptions<unknown, unknown>,
+  ): Effect.Effect<
+    unknown,
+    unknown,
+    ActorAddressResolver | ActorStateRegistry | ActorClientService<Name, Defs> | unknown
+  > => Effect.flatMap(stateAddress(entityId, stateOptions), stateObservation.get);
 
   const watchStateFn = (
     entityId: string,
@@ -937,22 +936,7 @@ const fromEntity = <
     unknown,
     unknown,
     ActorAddressResolver | ActorStateRegistry | ActorClientService<Name, Defs> | unknown
-  > =>
-    Stream.unwrap(
-      Effect.gen(function* () {
-        const materialize = Option.fromNullishOr(stateOptions?.materialize);
-        if (Option.isSome(materialize)) {
-          yield* materialize.value;
-        } else {
-          yield* activateFn(entityId);
-        }
-        const resolver = yield* ActorAddressResolver;
-        return watchStateOf(resolveEntityAddress(resolver, entityAny, entityId)).pipe(
-          Stream.catch((cause: unknown) => Stream.fromEffect(decodeFailure(cause))),
-          Stream.mapEffect(decodeState),
-        );
-      }),
-    );
+  > => Stream.unwrap(Effect.map(stateAddress(entityId, stateOptions), stateObservation.watch));
 
   const waitForStateFn = (
     entityId: string,
@@ -963,32 +947,9 @@ const fromEntity = <
     unknown,
     ActorAddressResolver | ActorStateRegistry | ActorClientService<Name, Defs> | unknown
   > =>
-    Effect.gen(function* () {
-      const materialize = Option.fromNullishOr(stateOptions?.materialize);
-      if (Option.isSome(materialize)) {
-        yield* materialize.value;
-      } else {
-        yield* activateFn(entityId);
-      }
-      const resolver = yield* ActorAddressResolver;
-      const address = resolveEntityAddress(resolver, entityAny, entityId);
-      const decoded = watchStateOf(address).pipe(
-        Stream.catch((cause: unknown) => Stream.fromEffect(decodeFailure(cause))),
-        Stream.mapEffect(decodeState),
-        Stream.filter(predicate),
-        Stream.runHead,
-      );
-      const option = yield* decoded;
-      return yield* Option.match(option, {
-        onNone: () =>
-          Effect.die(
-            new Error(
-              `effect-encore/waitForState: state stream ended before predicate matched for ${String(address.entityType)}:${String(address.entityId)}`,
-            ),
-          ),
-        onSome: Effect.succeed,
-      });
-    });
+    Effect.flatMap(stateAddress(entityId, stateOptions), (address) =>
+      stateObservation.waitFor(address, predicate),
+    );
 
   const listStateEntityIdsFn = () => listStateEntityIds(String(entityAny.type));
 

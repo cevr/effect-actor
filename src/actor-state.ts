@@ -173,6 +173,57 @@ export const waitForStateOf = <State, Error = never, Requirements = never>(
     ),
   );
 
+export interface ActorStateObservation<State, Error, Requirements> {
+  readonly get: (
+    address: EntityAddress.EntityAddress,
+  ) => Effect.Effect<State, Error | ActorStateUnavailable, ActorStateRegistry | Requirements>;
+  readonly watch: (
+    address: EntityAddress.EntityAddress,
+  ) => Stream.Stream<State, Error | ActorStateUnavailable, ActorStateRegistry | Requirements>;
+  readonly waitFor: (
+    address: EntityAddress.EntityAddress,
+    predicate: (state: State) => boolean,
+  ) => Effect.Effect<State, Error | ActorStateUnavailable, ActorStateRegistry | Requirements>;
+}
+
+export const makeActorStateObservation = <Input, State, Error, Requirements>(options: {
+  readonly decodeState: (value: Input) => Effect.Effect<State, Error, Requirements>;
+  readonly decodeFailure: (cause: unknown) => Effect.Effect<never, Error, Requirements>;
+}): ActorStateObservation<State, Error, Requirements> => {
+  const watch = (address: EntityAddress.EntityAddress) =>
+    watchStateOf<Input, Error, Requirements>(address).pipe(
+      Stream.catch((cause: Error | ActorStateUnavailable) =>
+        Stream.fromEffect(options.decodeFailure(cause)),
+      ),
+      Stream.mapEffect(options.decodeState),
+    );
+
+  return {
+    get: (address) =>
+      stateOf<Input, Error, Requirements>(address).pipe(
+        Effect.catch(options.decodeFailure),
+        Effect.flatMap(options.decodeState),
+      ),
+    watch,
+    waitFor: (address, predicate) =>
+      watch(address).pipe(
+        Stream.filter(predicate),
+        Stream.runHead,
+        Effect.flatMap((option) =>
+          Option.match(option, {
+            onNone: () =>
+              Effect.die(
+                new Error(
+                  `effect-encore/waitForState: state stream ended before predicate matched for ${String(address.entityType)}:${String(address.entityId)}`,
+                ),
+              ),
+            onSome: Effect.succeed,
+          }),
+        ),
+      ),
+  };
+};
+
 const addressKey = (address: EntityAddress.EntityAddress): string =>
   `${String(address.entityType)}\x00${String(address.entityId)}`;
 
