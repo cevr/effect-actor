@@ -901,6 +901,7 @@ const fromEntity = <
 ): EntityActor<Name, Defs, StateOf<StateDef>, StateErrorOf<StateDef>> => {
   for (const tag of Object.keys(definitions)) {
     if (RESERVED_KEYS.has(tag)) {
+      // oxlint-disable-next-line effect/noThrowStatement -- This synchronous builder must reject invalid definitions at module initialization.
       throw new ActorDefect({
         message: `effect-encore: operation "${tag}" collides with reserved property. Reserved: ${[...RESERVED_KEYS].join(", ")}`,
       });
@@ -2098,6 +2099,7 @@ const fromWorkflow = <
   /* eslint-enable typescript-eslint/no-explicit-any */
   for (const [sigName, sigDef] of Object.entries(def.signals ?? {})) {
     if (WORKFLOW_RESERVED_KEYS.has(sigName)) {
+      // oxlint-disable-next-line effect/noThrowStatement -- This synchronous builder must reject invalid signals at module initialization.
       throw new ActorDefect({
         message: `effect-encore: signal "${sigName}" collides with reserved property on workflow "${name}". Reserved: ${[...WORKFLOW_RESERVED_KEYS].join(", ")}`,
       });
