@@ -2,7 +2,7 @@ import { describe, expect, it } from "effect-bun-test";
 import { Effect, Layer as L, Ref, Schema } from "effect";
 import { MessageStorage, TestRunner } from "effect/unstable/cluster";
 import { ActorAddressResolverLayer } from "../src/actor-address-resolver.js";
-import { Actor, fromMessageStorage } from "../src/index.js";
+import { Actor, ClientLayer, fromMessageStorage } from "../src/index.js";
 import { MessageDeletion } from "../src/storage.js";
 
 // ── Test deletion layer on top of TestRunner ───────────────────────────────
@@ -44,10 +44,11 @@ const MessageDeletionTest = L.effect(
 // `provideMerge` keeps the upstream tags in the result alongside the new one.
 // ActorAddressResolverLayer.fromSharding is wired so .rerun has the resolver
 // alongside the storage shape.
-const TestCluster = ActorAddressResolverLayer.fromSharding.pipe(
+const TestSupport = ActorAddressResolverLayer.fromSharding.pipe(
   L.provideMerge(MessageDeletionTest),
   L.provideMerge(TestRunner.layer),
 );
+const TestCluster = L.merge(TestSupport, ClientLayer.fromSharding.pipe(L.provide(TestSupport)));
 
 describe("OperationHandle.rerun", () => {
   it.scopedLive("rerun-of-non-existent-execId is a no-op (idempotent)", () =>

@@ -73,6 +73,7 @@ import { ActorDefect } from "./actor-defect.js";
 import { type ExecId, type PeekResult, type ReplyDefs, peekStoredReply } from "./receipt.js";
 import type { Invocation } from "./internal/invocation-compiler.js";
 import { compileOutgoingRequest } from "./internal/invocation-compiler.js";
+import { MessageDeletion } from "./storage.js";
 
 function eraseTestRpcEffect<Candidate>(candidate: Candidate): Effect.Effect<void>;
 function eraseTestRpcEffect<Candidate>(candidate: Candidate): unknown {
@@ -162,6 +163,8 @@ export interface ClientService {
     execId: string,
     definitions?: ReplyDefs,
   ) => Effect.Effect<PeekResult, PersistenceError | MalformedMessage>;
+  /** Delete one invocation so the same operation identity can run again. */
+  readonly deleteInvocation: (invocation: Invocation) => Effect.Effect<void, PersistenceError>;
   /** Clear every persisted message for the entity (`flushImpl`, moved inside). */
   readonly flush: (
     entity: ClusterEntity.Entity<string, any>,
@@ -199,6 +202,7 @@ const makeClientService: Effect.Effect<
   const resolver = yield* ActorAddressResolver;
   const snowflakeGen = yield* Snowflake.Generator;
   const storage = yield* MessageStorage.MessageStorage;
+  const deletion = yield* Effect.serviceOption(MessageDeletion);
   const resolve: ClientService["resolve"] = (entity, entityId) =>
     resolveEntityAddress(resolver, entity, entityId);
 
@@ -217,6 +221,21 @@ const makeClientService: Effect.Effect<
         Effect.provideService(MessageStorage.MessageStorage, storage),
         Effect.provideService(ActorAddressResolver, resolver),
       ),
+    deleteInvocation: (invocation) => {
+      if (deletion._tag === "None") {
+        return Effect.die(
+          new ActorDefect({
+            message:
+              "effect-encore: this Client storage adapter does not support single-invocation deletion",
+          }),
+        );
+      }
+      return deletion.value.deleteInvocation({
+        address: resolve(invocation.entity, invocation.identity.entityId),
+        tag: invocation.tag,
+        primaryKey: invocation.identity.primaryKey,
+      });
+    },
     flush: (entity, actorId) =>
       storage.clearAddress(resolveEntityAddress(resolver, entity, actorId)),
     redeliver: (entity, actorId) =>

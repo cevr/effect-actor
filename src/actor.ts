@@ -64,9 +64,7 @@ import {
   Suspended,
   makeExecId,
   mapExitToWorkflowPeekResult,
-  peekStoredReply,
 } from "./receipt.js";
-import { MessageDeletion } from "./storage.js";
 import {
   Client,
   clientServiceLayer,
@@ -610,7 +608,7 @@ export interface OperationHandle<
     | EntityNotAssignedToRunner
     | MalformedMessage
     | SendAndAwaitTimeout,
-    Client | MessageStorage.MessageStorage | ActorAddressResolver
+    Client
   >;
   readonly executionId: (
     payload: PayloadInput<C>,
@@ -620,7 +618,7 @@ export interface OperationHandle<
   ) => Effect.Effect<
     PeekResult<Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>,
     PersistenceError | MalformedMessage,
-    MessageStorage.MessageStorage | ActorAddressResolver
+    Client
   >;
   readonly watch: (
     payload: PayloadInput<C>,
@@ -628,7 +626,7 @@ export interface OperationHandle<
   ) => Stream.Stream<
     PeekResult<Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>,
     PersistenceError | MalformedMessage,
-    MessageStorage.MessageStorage | ActorAddressResolver
+    Client
   >;
   readonly waitFor: (
     payload: PayloadInput<C>,
@@ -642,11 +640,9 @@ export interface OperationHandle<
   ) => Effect.Effect<
     PeekResult<Schema.Schema.Type<SuccessOf<C>>, Schema.Schema.Type<ErrorOf<C>>>,
     PersistenceError | MalformedMessage,
-    MessageStorage.MessageStorage | ActorAddressResolver
+    Client
   >;
-  readonly rerun: (
-    payload: PayloadInput<C>,
-  ) => Effect.Effect<void, PersistenceError, MessageDeletion | ActorAddressResolver>;
+  readonly rerun: (payload: PayloadInput<C>) => Effect.Effect<void, PersistenceError, Client>;
   readonly make: (payload: PayloadInput<C>) => OperationValue<Name, Tag, C>;
 }
 
@@ -750,35 +746,13 @@ export type EntityActor<
 
 // ── rerun — surgical per-invocation deletion ──────────────────────────────
 
-const rerunImpl = (
-  // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs type erased
-  entity: ClusterEntity.Entity<string, any>,
-  def: OperationDef | void,
-  tag: string,
-  payload: unknown,
-): Effect.Effect<void, PersistenceError, MessageDeletion | ActorAddressResolver> =>
-  Effect.gen(function* () {
-    const { entityId, primaryKey } = resolveId(def, payload, tag);
-    const deletion = yield* MessageDeletion;
-    const resolver = yield* ActorAddressResolver;
-    const address = resolveEntityAddress(resolver, entity, entityId);
-    yield* deletion.deleteInvocation({
-      address,
-      tag,
-      primaryKey,
-    });
-  });
-
 const peekImpl = (
   // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs type erased
   entity: ClusterEntity.Entity<string, any>,
   execId: string,
   definitions?: OperationDefs,
-): Effect.Effect<
-  PeekResult,
-  PersistenceError | MalformedMessage,
-  MessageStorage.MessageStorage | ActorAddressResolver
-> => peekStoredReply(entity, execId, definitions);
+): Effect.Effect<PeekResult, PersistenceError | MalformedMessage, Client> =>
+  Client.use((client) => client.peek(entity, execId, definitions));
 
 // ── watch — internal implementation ──────────────────────────────────────
 
@@ -788,11 +762,8 @@ const watchImpl = (
   execId: string,
   definitions?: OperationDefs,
   options?: { readonly interval?: Duration.Input },
-): Stream.Stream<
-  PeekResult,
-  PersistenceError | MalformedMessage,
-  MessageStorage.MessageStorage | ActorAddressResolver
-> => watchExecution(peekImpl(entity, execId, definitions), options);
+): Stream.Stream<PeekResult, PersistenceError | MalformedMessage, Client> =>
+  watchExecution(peekImpl(entity, execId, definitions), options);
 
 // ── Actor.fromEntity ──────────────────────────────────────────────────────
 
@@ -1108,7 +1079,8 @@ const makeOperationHandle = <
         peekImpl(entityAny, invocationOf(payload).identity.execId, definitions),
         options as never,
       )) as never,
-    rerun: ((payload: unknown) => rerunImpl(entityAny, def, tag, payload)) as never,
+    rerun: ((payload: unknown) =>
+      Client.use((client) => client.deleteInvocation(invocationOf(payload)))) as never,
     make: ((payload: unknown) => invocationOf(payload).operation as never) as never,
   };
 
