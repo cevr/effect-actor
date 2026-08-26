@@ -18,7 +18,6 @@ import type {
 import type { Rpc, RpcClient, RpcGroup } from "effect/unstable/rpc";
 import { Workflow as UpstreamWorkflow } from "effect/unstable/workflow";
 import { ActorAddressResolver, ActorAddressResolverLayer } from "./actor-address-resolver.js";
-import { assembleActorRuntime, attachFreshService } from "./actor-runtime.js";
 import { ActorDefect } from "./actor-defect.js";
 import type { MailboxError, ActorMailboxService } from "./actor-mailbox.js";
 import { ActorMailbox, ActorMailboxLayer } from "./actor-mailbox.js";
@@ -125,6 +124,19 @@ const layerPassthrough = <ROut, E, RIn>(
   layer: Layer.Layer<ROut, E, RIn>,
 ): Layer.Layer<ROut | RIn, E, RIn> =>
   Layer.merge(Layer.effectContext(Effect.context<RIn>()), layer);
+
+const attachFreshService = <Support, Service, E, R, ServiceR>(
+  support: Layer.Layer<Support, E, R>,
+  service: Layer.Layer<Service, never, ServiceR>,
+): Layer.Layer<Support | Service, E, R | Exclude<ServiceR, Support>> =>
+  Layer.merge(support, Layer.provide(Layer.fresh(service), support));
+
+const assembleActorRuntime = <Base, State, Control, E, R, StateR, ControlR>(
+  base: Layer.Layer<Base, E, R>,
+  state: Layer.Layer<State, never, StateR>,
+  control: Layer.Layer<Control, never, ControlR>,
+): Layer.Layer<Base | State | Control, E, R | Exclude<StateR, Base> | Exclude<ControlR, Base>> =>
+  Layer.mergeAll(base, Layer.provide(state, base), Layer.provide(control, base));
 
 // Payload classification and identity rules live in the internal Invocation
 // compiler. Actor and Client consume the same compiled facts.
