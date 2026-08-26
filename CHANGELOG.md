@@ -1,5 +1,17 @@
 # effect-encore
 
+## 0.28.0
+
+### Minor Changes
+
+- [`63ad4dd`](https://github.com/cevr/effect-encore/commit/63ad4ddef9ea7d74a76107f44864d37a2c58137c) Thanks [@cevr](https://github.com/cevr)! - Require Effect 4 RC and update the package to its current Cluster and Workflow APIs.
+
+  Route entity observation and rerun through the Client seam. Keep Workflow and Step methods as thin
+  delegates to upstream Effect where Effect supplies the full behavior.
+
+  Remove internal actor state registry operations from the package root. Applications must use the
+  state methods on an Entity Actor.
+
 ## 0.27.1
 
 ### Patch Changes
