@@ -22,7 +22,8 @@ Encore provides deep interfaces over Effect primitives.
    Execute and send compile it once.
 3. `Client` owns transport and stored reply lookup.
    Mailbox, address resolver, and reply lookup stay internal.
-4. One actor runtime assembler owns Layer lifetime and composition.
+4. Separate Entity and Workflow compilers own their Layer lifetime and composition.
+   The `Actor` facade selects the correct compiler.
 5. `State<A>` is opaque.
    Module functions own reads, writes, changes, and synchronization.
 6. Effect owns `MessageStorage`.

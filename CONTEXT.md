@@ -8,8 +8,9 @@ names the load-bearing concepts so architecture reviews and AI navigation use on
 - **Actor** — a declarative entity or workflow definition (`Actor.fromEntity` / `Actor.fromWorkflow`)
   that compiles to effect's cluster `Entity` / `Workflow`. Not a new runtime.
 - **Operation** — one named message on an Actor (`payload` / `success` / `error` / `id` / `persisted`
-  / `deliverAt`). Callers construct an OperationValue and dispatch it via `ref.execute(op)` (await a
-  reply) or `ref.send(op)` (fire-and-forget). Delivery mode is the caller's choice, not the definition's.
+  / `deliverAt`). Callers use payload-only methods on its `OperationHandle`, such as
+  `ActorName.Operation.execute(payload)` and `ActorName.Operation.send(payload)`. `make(payload)` and
+  raw `ActorRef` dispatch are escape hatches. Delivery mode is the caller's choice.
 - **Invocation** — one typed call to an Operation. It owns the input, operation value, actor identity,
   and ExecId. Encore compiles it once before execution or transport.
 - **ExecId** — the reply token. A branded string `entityId\x00tag\x00primaryKey` identifying one
@@ -42,4 +43,17 @@ Interrupted | Defect | Suspended`. What `peek(execId)` returns and `waitFor` pol
   public utilities. There is no separate reply service.
 - **Message deletion** — the internal storage capability for `deleteInvocation`.
   Effect owns address-wide `MessageStorage` cleanup. Encore adds only the single-invocation deletion
-  required by entity rerun.
+  required by entity rerun. `Client` captures this capability and owns rerun dispatch.
+
+## Internal ownership
+
+- The invocation compiler owns payload classification, operation values, identities, ExecIds, Effect
+  RPCs, and outgoing request compilation.
+- The workflow actor compiler owns Workflow definition compilation, payload-only lifecycle methods,
+  signals, handler adaptation, and Workflow layers.
+- Execution observation owns scheduled watch and wait behavior for entity and Workflow results.
+- Actor state observation owns activation, decoding, failure mapping, and local state streams.
+- Durable compensation owns the persisted plan, failed attempt, operator decision, retry, and stop
+  protocol.
+
+These modules are implementation boundaries. The package exports only its root API.
