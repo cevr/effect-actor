@@ -38,11 +38,10 @@ import {
   Option,
   Pipeable,
   Predicate,
-  Schedule,
   Schema,
   Stream,
 } from "effect";
-import type { Scope } from "effect";
+import type { Schedule, Scope } from "effect";
 import { dual } from "effect/Function";
 import type {
   CompensationDecision,
@@ -64,7 +63,6 @@ import {
   ExecIdCodec,
   Pending,
   Suspended,
-  isTerminal,
   makeExecId,
   mapExitToWorkflowPeekResult,
   peekStoredReply,
@@ -90,6 +88,10 @@ import {
   payloadFromOperation,
   resolveId,
 } from "./internal/invocation-compiler.js";
+import {
+  waitFor as waitForExecution,
+  watch as watchExecution,
+} from "./internal/execution-observation.js";
 import {
   ActorStateRegistry,
   listStateEntityIds,
@@ -573,7 +575,7 @@ export interface OperationHandle<
    *    that persisted result immediately (matches `send`/`peek` semantics).
    * 3. Ops with a future `deliverAt` poll until delivery + processing — the
    *    `timeout` must exceed the `deliverAt` delay.
-   * 4. The default poll interval is `makeWaitFor`'s 200ms `Schedule.spaced`;
+   * 4. The default poll interval is 200ms;
    *    override via `schedule`.
    *
    * A persisted `Failure` reply surfaces in the error channel; `Defect` and
@@ -779,45 +781,7 @@ const watchImpl = (
   PeekResult,
   PersistenceError | MalformedMessage,
   MessageStorage.MessageStorage | ActorAddressResolver
-> => {
-  const interval = options?.interval ?? Duration.millis(200);
-  return Stream.fromEffectSchedule(
-    peekImpl(entity, execId, definitions),
-    Schedule.spaced(interval),
-  ).pipe(Stream.changesWith(peekResultEquals), Stream.takeUntil(isTerminal));
-};
-
-const peekResultEquals = <A, E>(a: PeekResult<A, E>, b: PeekResult<A, E>): boolean => {
-  if (a._tag !== b._tag) return false;
-  if (a._tag === "Success" && b._tag === "Success") return a.value === b.value;
-  if (a._tag === "Failure" && b._tag === "Failure") return a.error === b.error;
-  if (a._tag === "Defect" && b._tag === "Defect") return a.cause === b.cause;
-  return true;
-};
-
-// ── waitFor helper ────────────────────────────────────���───────────────────
-
-/* eslint-disable-next-line typescript-eslint/no-explicit-any -- Schedule types are open */
-const defaultWaitSchedule: Schedule.Schedule<any, unknown> = Schedule.spaced("200 millis");
-
-/* eslint-disable typescript-eslint/no-explicit-any -- waitFor/signal require open types */
-const makeWaitFor = <S, E, PE, PR>(
-  peekFn: (execId: ExecId<S, E>) => Effect.Effect<PeekResult<S, E>, PE, PR>,
-  execId: ExecId<S, E>,
-  options?: {
-    readonly filter?: (result: PeekResult<S, E>) => boolean;
-    readonly schedule?: Schedule.Schedule<any, unknown>;
-  },
-): Effect.Effect<PeekResult<S, E>, PE, PR> => {
-  const filter = options?.filter ?? (isTerminal as (r: PeekResult<S, E>) => boolean);
-  const sched = options?.schedule ?? defaultWaitSchedule;
-  return peekFn(execId).pipe(
-    Effect.repeat({
-      schedule: sched as Schedule.Schedule<any, PeekResult<S, E>>,
-      while: (result) => !filter(result),
-    }),
-  );
-};
+> => watchExecution(peekImpl(entity, execId, definitions), options);
 
 // ── Actor.fromEntity ──────────────────────────────────────────────────────
 
@@ -1116,9 +1080,9 @@ const makeOperationHandle = <
       Effect.gen(function* () {
         const eid = yield* sendFn(payload);
         const result = yield* Effect.timeoutOrElse(
-          makeWaitFor((e) => peekImpl(entityAny, e as string, definitions), eid, {
+          waitForExecution(peekImpl(entityAny, eid, definitions), {
             schedule: options.schedule,
-          } as never),
+          }),
           {
             duration: options.timeout,
             orElse: () =>
@@ -1167,9 +1131,8 @@ const makeOperationHandle = <
         readonly schedule?: Schedule.Schedule<any, unknown>;
       },
     ) =>
-      makeWaitFor(
-        (eid) => peekImpl(entityAny, eid as string, definitions),
-        invocationOf(payload).identity.execId,
+      waitForExecution(
+        peekImpl(entityAny, invocationOf(payload).identity.execId, definitions),
         options as never,
       )) as never,
     rerun: ((payload: unknown) => rerunImpl(entityAny, def, tag, payload)) as never,
@@ -2069,13 +2032,8 @@ const fromWorkflow = <
   const watchAtFn = (
     executionId: string,
     options?: { readonly interval?: Duration.Input },
-  ): Stream.Stream<RawPeek, never, WorkflowReadServices<Success, Error>> => {
-    const interval = options?.interval ?? Duration.millis(200);
-    return Stream.fromEffectSchedule(peekAtFn(executionId), Schedule.spaced(interval)).pipe(
-      Stream.changesWith(peekResultEquals),
-      Stream.takeUntil(isTerminal),
-    );
-  };
+  ): Stream.Stream<RawPeek, never, WorkflowReadServices<Success, Error>> =>
+    watchExecution(peekAtFn(executionId), options);
 
   const watchFn = (
     payload: WorkflowPayloadType<Payload>,
@@ -2091,7 +2049,7 @@ const fromWorkflow = <
       readonly schedule?: Schedule.Schedule<any, unknown>;
     },
   ): Effect.Effect<RawPeek, never, WorkflowReadServices<Success, Error>> =>
-    makeWaitFor(peekAtFn, makeExecId(executionId), options);
+    waitForExecution(peekAtFn(executionId), options);
 
   const waitForFn = (
     payload: WorkflowPayloadType<Payload>,
