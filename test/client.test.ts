@@ -66,6 +66,7 @@ describe("OperationHandle.execute", () => {
       const BoomActor = Actor.fromEntity("Boom", {
         Explode: { id: () => "boom" },
       });
+      // oxlint-disable-next-line effect/noAs, effect/noNullish -- the zero-payload operation uses never at this public call seam
       const exit = yield* BoomActor.Explode.execute(undefined as never).pipe(Effect.exit);
       expect(Exit.isFailure(exit)).toBe(true);
     }),
@@ -88,6 +89,7 @@ describe("OperationHandle.execute", () => {
       const VolatileActor = Actor.fromEntity("Volatile", {
         Ping: { success: Schema.String, id: () => "ping" },
       });
+      // oxlint-disable-next-line effect/noAs, effect/noNullish -- the zero-payload operation uses never at this public call seam
       const result = yield* VolatileActor.Ping.execute(undefined as never);
       expect(result).toBe("pong");
     }),
@@ -116,7 +118,7 @@ describe("OperationHandle.send", () => {
   castTest("send dispatches persisted message — returns ExecId encoding tag and primaryKey", () =>
     Effect.gen(function* () {
       const execId = yield* CastActor.Process.send({ input: "data" });
-      expect(typeof execId).toBe("string");
+      expect(execId).toBeTypeOf("string");
       // entityId === primaryKey === "data" (from the id fn)
       expect(String(execId)).toBe("data\x00Process\x00data");
     }),

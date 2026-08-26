@@ -59,6 +59,7 @@ const CoercedLayer = Layer.provide(
       // The registered state's `get` returns the pre-decode wire value
       // ("42"); the registry decodes it through `state.schema`
       // (`Schema.NumberFromString`) on read.
+      // oxlint-disable-next-line effect/noAs, effect/noChainedTypeAssertions -- The encoded-state fixture must cross the registry's decoded number type to verify string decoding.
       const ref = yield* SubscriptionRef.make("42" as unknown as number);
       const state = yield* Actor.State.make(SubscriptionRef.get(ref), (value) =>
         SubscriptionRef.set(ref, value),
@@ -147,29 +148,28 @@ describe("Actor state protocol", () => {
       expect(values).toEqual([1, 5]);
     }));
 
-  test("fails loudly when the materialized entity registers no state", () =>
-    Effect.gen(function* () {
-      const Stateless = Actor.fromEntity("Stateless", {
-        Ping: {
-          payload: { id: Schema.String },
-          id: (p: { id: string }) => p.id,
-        },
-      });
-      const StatelessLayer = Layer.provide(
-        Actor.toTestLayer(Stateless, {
-          Ping: () => Effect.void,
-        }),
-        TestShardingConfig,
-      );
-      const exit = yield* Stateless.getState("missing").pipe(
-        Effect.provide(StatelessLayer),
-        Effect.exit,
-      );
+  test("fails loudly when the materialized entity registers no state", () => {
+    const Stateless = Actor.fromEntity("Stateless", {
+      Ping: {
+        payload: { id: Schema.String },
+        id: (p: { id: string }) => p.id,
+      },
+    });
+    const StatelessLayer = Layer.provide(
+      Actor.toTestLayer(Stateless, {
+        Ping: () => Effect.void,
+      }),
+      TestShardingConfig,
+    );
+
+    return Effect.gen(function* () {
+      const exit = yield* Stateless.getState("missing").pipe(Effect.exit);
       expect(exit._tag).toBe("Failure");
       if (exit._tag === "Failure") {
         expect(String(exit.cause)).toContain("ActorStateUnavailable");
       }
-    }));
+    }).pipe(Effect.provide(StatelessLayer));
+  });
 
   test("waitForState resolves when predicate matches a future state", () =>
     Effect.gen(function* () {

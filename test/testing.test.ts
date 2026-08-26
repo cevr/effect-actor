@@ -56,40 +56,38 @@ describe("Actor.toTestLayer", () => {
   test("send returns ExecId string", () =>
     Effect.gen(function* () {
       const execId = yield* Echo.Fire.send({ x: 7 });
-      expect(typeof execId).toBe("string");
+      expect(execId).toBeTypeOf("string");
       expect(String(execId)).toBe("7\x00Fire\x007");
     }));
 
-  it.scopedLive("preserves side-effect observation", () =>
-    Effect.gen(function* () {
-      const calls = yield* Ref.make<Array<string>>([]);
+  it.scopedLive("preserves side-effect observation", () => {
+    const calls = Ref.makeUnsafe<Array<string>>([]);
 
-      const Tracker = Actor.fromEntity("Tracker", {
-        Track: {
-          payload: { item: Schema.String },
-          success: Schema.String,
-          id: (p: { item: string }) => p.item,
-        },
-      });
+    const Tracker = Actor.fromEntity("Tracker", {
+      Track: {
+        payload: { item: Schema.String },
+        success: Schema.String,
+        id: (p: { item: string }) => p.item,
+      },
+    });
 
-      const TrackerTest = Layer.provide(
-        Actor.toTestLayer(Tracker, {
-          Track: ({ operation }) =>
-            Ref.update(calls, (arr) => [...arr, operation.item]).pipe(
-              Effect.as(`tracked: ${operation.item}`),
-            ),
-        }),
-        TestShardingConfig,
-      );
+    const TrackerTest = Layer.provide(
+      Actor.toTestLayer(Tracker, {
+        Track: ({ operation }) =>
+          Ref.update(calls, (arr) => [...arr, operation.item]).pipe(
+            Effect.as(`tracked: ${operation.item}`),
+          ),
+      }),
+      TestShardingConfig,
+    );
 
-      // Provide around the full usage so the client layer is in scope
-      return yield* Effect.gen(function* () {
-        const result = yield* Tracker.Track.execute({ item: "widget" });
-        expect(result).toBe("tracked: widget");
+    // Provide around the full usage so the client layer is in scope
+    return Effect.gen(function* () {
+      const result = yield* Tracker.Track.execute({ item: "widget" });
+      expect(result).toBe("tracked: widget");
 
-        const recorded = yield* Ref.get(calls);
-        expect(recorded).toEqual(["widget"]);
-      }).pipe(Effect.provide(TrackerTest));
-    }),
-  );
+      const recorded = yield* Ref.get(calls);
+      expect(recorded).toEqual(["widget"]);
+    }).pipe(Effect.provide(TrackerTest));
+  });
 });

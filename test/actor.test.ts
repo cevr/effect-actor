@@ -77,26 +77,25 @@ describe("Actor.fromEntity", () => {
       },
     });
     expect(WithPK._meta.definitions["Op"].id).toBeDefined();
-    const pk = WithPK._meta.definitions["Op"].id({ id: "abc" } as never);
+    const pk = WithPK._meta.definitions["Op"].id({ id: "abc" });
     expect(pk).toBe("abc");
   });
 
   test("operations without explicit persisted: true use cluster default", () => {
     const rpc = Counter._meta.entity.protocol.requests.get("Increment")!;
     const result = Context.getOption(rpc.annotations, ClusterSchema.Persisted);
-    expect(
-      (Counter._meta.definitions["Increment"] as Record<string, unknown>)["persisted"],
-    ).toBeUndefined();
+    expect("persisted" in Counter._meta.definitions["Increment"]).toBe(false);
     expect(result._tag).toBe("Some");
   });
 
   test("operation handles expose make() to produce operation values with _tag", () => {
     const op = Counter.Increment.make({ amount: 5 });
     expect(op._tag).toBe("Increment");
-    expect((op as unknown as { amount: number }).amount).toBe(5);
+    expect(op.amount).toBe(5);
   });
 
   test("zero-input handles allow make() with no args", () => {
+    // oxlint-disable-next-line effect/noAs, effect/noNullish -- The nullary operation fixture must supply the public method's uninhabited payload parameter.
     const op = Counter.GetCount.make(undefined as never);
     expect(op._tag).toBe("GetCount");
   });
@@ -116,6 +115,7 @@ describe("Actor.fromEntity", () => {
 
   test("throws on reserved operation names", () => {
     expect(() =>
+      // oxlint-disable-next-line effect/noAs -- The invalid reserved-name fixture must bypass the public definition type to verify the runtime guard.
       Actor.fromEntity("Bad", {
         _meta: { id: () => "x" },
       } as never),
@@ -124,6 +124,7 @@ describe("Actor.fromEntity", () => {
 
   test("throws on reserved operation name 'interrupt'", () => {
     expect(() =>
+      // oxlint-disable-next-line effect/noAs -- The invalid reserved-name fixture must bypass the public definition type to verify the runtime guard.
       Actor.fromEntity("Bad", {
         interrupt: { id: () => "x" },
       } as never),
@@ -132,6 +133,7 @@ describe("Actor.fromEntity", () => {
 
   test("throws on reserved operation name 'flush'", () => {
     expect(() =>
+      // oxlint-disable-next-line effect/noAs -- The invalid reserved-name fixture must bypass the public definition type to verify the runtime guard.
       Actor.fromEntity("Bad", {
         flush: { id: () => "x" },
       } as never),
@@ -140,6 +142,7 @@ describe("Actor.fromEntity", () => {
 
   test("throws on reserved operation name 'redeliver'", () => {
     expect(() =>
+      // oxlint-disable-next-line effect/noAs -- The invalid reserved-name fixture must bypass the public definition type to verify the runtime guard.
       Actor.fromEntity("Bad", {
         redeliver: { id: () => "x" },
       } as never),
@@ -154,6 +157,7 @@ describe("Actor.fromEntity", () => {
     // Every infrastructure key should be blocked by the reserved check
     for (const key of infrastructureKeys) {
       expect(() =>
+        // oxlint-disable-next-line effect/noAs -- The generated invalid reserved-name fixture must bypass the public definition type to verify the runtime guard.
         Actor.fromEntity("ReservedCheck", {
           [key]: { id: () => "x" },
         } as never),
@@ -172,6 +176,7 @@ describe("OperationHandle dispatch via toTestLayer", () => {
 
   effectTest("execute works for zero-input operations", () =>
     Effect.gen(function* () {
+      // oxlint-disable-next-line effect/noAs, effect/noNullish -- The nullary operation fixture must supply the public method's uninhabited payload parameter.
       const result = yield* Counter.GetCount.execute(undefined as never);
       expect(result).toBe(42);
     }),
@@ -180,40 +185,38 @@ describe("OperationHandle dispatch via toTestLayer", () => {
   effectTest("send(payload) returns ExecId encoding entityId/tag/primaryKey", () =>
     Effect.gen(function* () {
       const execId = yield* Counter.Increment.send({ amount: 7 });
-      expect(typeof execId).toBe("string");
+      expect(execId).toBeTypeOf("string");
       // entityId === primaryKey === String(amount) === "7"
       expect(String(execId)).toBe("7\x00Increment\x007");
     }),
   );
 
-  effectTest("ExecId uses null-byte separator (colons in segments are safe)", () =>
-    Effect.gen(function* () {
-      const NsCounter = Actor.fromEntity("NsCounter", {
-        Bump: {
-          payload: { ns: Schema.String, amount: Schema.Finite },
-          success: Schema.Finite,
-          id: (p: { ns: string; amount: number }) => ({
-            entityId: `ns:${p.ns}`,
-            primaryKey: String(p.amount),
-          }),
-        },
-      });
-      const NsTest = Layer.provide(
-        Actor.toTestLayer(NsCounter, {
-          Bump: ({ operation }) => Effect.succeed(operation.amount + 1),
+  effectTest("ExecId uses null-byte separator (colons in segments are safe)", () => {
+    const NsCounter = Actor.fromEntity("NsCounter", {
+      Bump: {
+        payload: { ns: Schema.String, amount: Schema.Finite },
+        success: Schema.Finite,
+        id: (p: { ns: string; amount: number }) => ({
+          entityId: `ns:${p.ns}`,
+          primaryKey: String(p.amount),
         }),
-        TestShardingConfig,
-      );
+      },
+    });
+    const NsTest = Layer.provide(
+      Actor.toTestLayer(NsCounter, {
+        Bump: ({ operation }) => Effect.succeed(operation.amount + 1),
+      }),
+      TestShardingConfig,
+    );
 
-      yield* Effect.gen(function* () {
-        const execId = yield* NsCounter.Bump.send({ ns: "tenant-1", amount: 3 });
-        expect(String(execId)).toBe("ns:tenant-1\x00Bump\x003");
-        const str = String(execId);
-        expect(str).toContain("\x00");
-        expect(str.split("\x00")).toEqual(["ns:tenant-1", "Bump", "3"]);
-      }).pipe(Effect.provide(NsTest));
-    }),
-  );
+    return Effect.gen(function* () {
+      const execId = yield* NsCounter.Bump.send({ ns: "tenant-1", amount: 3 });
+      expect(String(execId)).toBe("ns:tenant-1\x00Bump\x003");
+      const str = String(execId);
+      expect(str).toContain("\x00");
+      expect(str.split("\x00")).toEqual(["ns:tenant-1", "Bump", "3"]);
+    }).pipe(Effect.provide(NsTest));
+  });
 
   test("executionId(payload) computes ExecId without dispatching", () => {
     const execId = Effect.runSync(Counter.Increment.executionId({ amount: 5 }));
@@ -242,7 +245,7 @@ describe("scalar payload", () => {
   test("make() produces operation value with _payload key for scalar payload", () => {
     const op = Echo.Say.make("hello");
     expect(op._tag).toBe("Say");
-    expect((op as unknown as { _payload: string })._payload).toBe("hello");
+    expect(op._payload).toBe("hello");
   });
 
   scalarTest("execute round-trips scalar payload through handler", () =>
@@ -274,7 +277,7 @@ describe("deliverAt", () => {
     const rpc = Delayed._meta.entity.protocol.requests.get("Process")!;
     const payloadSchema = rpc.payloadSchema;
     const now = DateTime.makeUnsafe(FIXED_EPOCH_MS);
-    const instance = new (payloadSchema as unknown as new (args: unknown) => unknown)({
+    const instance = payloadSchema.make({
       id: "test-123",
       deliverAt: now,
     });
@@ -293,12 +296,14 @@ describe("deliverAt", () => {
 
     const rpc = WithPK._meta.entity.protocol.requests.get("Op")!;
     const payloadSchema = rpc.payloadSchema;
-    const instance = new (payloadSchema as unknown as new (args: unknown) => unknown)({
+    const instance = payloadSchema.make({
       id: "abc",
-    }) as { [PrimaryKey.symbol](): string };
+    });
 
-    expect(typeof instance[PrimaryKey.symbol]).toBe("function");
-    expect(instance[PrimaryKey.symbol]()).toBe("abc");
+    expect(PrimaryKey.isPrimaryKey(instance)).toBe(true);
+    if (PrimaryKey.isPrimaryKey(instance)) {
+      expect(PrimaryKey.value(instance)).toBe("abc");
+    }
   });
 
   test("deliverAt without payload primaryKey symbol is valid (delayed but uses fn primaryKey)", () => {
@@ -314,7 +319,7 @@ describe("deliverAt", () => {
     const rpc = DelayedOnly._meta.entity.protocol.requests.get("Fire")!;
     const payloadSchema = rpc.payloadSchema;
     const now = DateTime.makeUnsafe(FIXED_EPOCH_MS);
-    const instance = new (payloadSchema as unknown as new (args: unknown) => unknown)({
+    const instance = payloadSchema.make({
       when: now,
     });
 
@@ -465,7 +470,7 @@ describe("Actor.withProtocol", () => {
     expect(transformed.Increment._tag).toBe("OperationHandle");
     const op = transformed.Increment.make({ amount: 5 });
     expect(op._tag).toBe("Increment");
-    expect((op as unknown as { amount: number }).amount).toBe(5);
+    expect(op.amount).toBe(5);
   });
 
   test("pipe is chainable", () => {

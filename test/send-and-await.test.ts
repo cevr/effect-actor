@@ -138,7 +138,9 @@ describe("OperationHandle.sendAndAwait", () => {
         { timeout: "5 seconds" },
       ).pipe(Effect.flip);
       expect(error._tag).toBe("ProcessError");
-      expect((error as ProcessError).message).toBe("bad input");
+      if (error._tag === "ProcessError") {
+        expect(error.message).toBe("bad input");
+      }
     }).pipe(Effect.provide(sendAwaitHandlersLayer)),
   );
 
@@ -149,9 +151,10 @@ describe("OperationHandle.sendAndAwait", () => {
         { timeout: "300 millis" },
       ).pipe(Effect.flip);
       expect(error).toBeInstanceOf(SendAndAwaitTimeout);
-      const timeout = error as SendAndAwaitTimeout;
-      expect(timeout.entityType).toBe("SendAwaitActor");
-      expect(timeout.execId).toBe("stuck\x00Hang\x00stuck");
+      if (error instanceof SendAndAwaitTimeout) {
+        expect(error.entityType).toBe("SendAwaitActor");
+        expect(error.execId).toBe("stuck\x00Hang\x00stuck");
+      }
     }).pipe(Effect.provide(sendAwaitFastLayer)),
   );
 
@@ -214,7 +217,9 @@ describe("OperationHandle.sendAndAwait", () => {
         // The seam resolved via the default fallback: we reach the poll timeout,
         // NOT a missing internal reply reader.
         expect(error).toBeInstanceOf(SendAndAwaitTimeout);
-        expect((error as SendAndAwaitTimeout).entityType).toBe("SendAwaitActor");
+        if (error instanceof SendAndAwaitTimeout) {
+          expect(error.entityType).toBe("SendAwaitActor");
+        }
       }).pipe(Effect.provide(senderOnlyHost)),
   );
 });

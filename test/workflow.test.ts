@@ -44,7 +44,9 @@ describe("Actor.fromWorkflow", () => {
   test("make produces an operation value with _tag", () => {
     const op = ProcessOrder.make({ orderId: "ord-1" });
     expect(op._tag).toBe("Run");
-    expect((op as { orderId: string }).orderId).toBe("ord-1");
+    if (ProcessOrder.$is("Run")(op)) {
+      expect(op.orderId).toBe("ord-1");
+    }
   });
 
   test("$is type guard works for Run", () => {
@@ -75,7 +77,7 @@ describe("Actor.fromWorkflow — execute/send", () => {
   it.scopedLive.layer(GreeterTest)("send returns ExecId string", () =>
     Effect.gen(function* () {
       const execId = yield* Greeter.send({ name: "cast-test" });
-      expect(typeof execId).toBe("string");
+      expect(execId).toBeTypeOf("string");
     }),
   );
 

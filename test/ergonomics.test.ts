@@ -98,20 +98,20 @@ describe("ergonomics: per-op handle surface", () => {
     const h = SameIdActor.Run;
     expect(h._tag).toBe("OperationHandle");
     expect(h.name).toBe("Run");
-    expect(typeof h.execute).toBe("function");
-    expect(typeof h.send).toBe("function");
-    expect(typeof h.executionId).toBe("function");
-    expect(typeof h.peek).toBe("function");
-    expect(typeof h.watch).toBe("function");
-    expect(typeof h.waitFor).toBe("function");
-    expect(typeof h.rerun).toBe("function");
-    expect(typeof h.make).toBe("function");
+    expect(h.execute).toBeTypeOf("function");
+    expect(h.send).toBeTypeOf("function");
+    expect(h.executionId).toBeTypeOf("function");
+    expect(h.peek).toBeTypeOf("function");
+    expect(h.watch).toBeTypeOf("function");
+    expect(h.waitFor).toBeTypeOf("function");
+    expect(h.rerun).toBeTypeOf("function");
+    expect(h.make).toBeTypeOf("function");
   });
 
   test("make() is the escape hatch for raw OperationValue construction", () => {
     const op = SameIdActor.Run.make({ key: "abc" });
     expect(op._tag).toBe("Run");
     // Struct payload is spread onto the value
-    expect((op as unknown as { key: string }).key).toBe("abc");
+    expect(op.key).toBe("abc");
   });
 });

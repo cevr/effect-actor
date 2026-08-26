@@ -48,27 +48,31 @@ const entityIds = [
 ];
 
 // eslint-disable-next-line typescript-eslint/no-explicit-any -- Entity name param is invariant; production casts the same way at actor.ts
+// oxlint-disable-next-line effect/noAs -- the upstream resolver seam erases the invariant entity name and RPC union
 const testEntity = TestActor._meta.entity as ClusterEntity.Entity<string, any>;
 
 describe("ActorAddressResolver parity (fromConfig vs fromSharding)", () => {
   for (const entityId of entityIds) {
     it.scopedLive(`produces identical EntityAddress for "${entityId}"`, () =>
-      Effect.gen(function* () {
-        const fromConfigAddress = yield* Effect.gen(function* () {
+      Effect.all({
+        fromConfigAddress: Effect.gen(function* () {
           const resolver = yield* ActorAddressResolver;
           return resolver.resolveEntity(testEntity, entityId);
-        }).pipe(Effect.provide(FromConfigCluster));
-
-        const fromShardingAddress = yield* Effect.gen(function* () {
+        }).pipe(Effect.provide(FromConfigCluster)),
+        fromShardingAddress: Effect.gen(function* () {
           const resolver = yield* ActorAddressResolver;
           return resolver.resolveEntity(testEntity, entityId);
-        }).pipe(Effect.provide(FromShardingCluster));
-
-        expect(fromConfigAddress.entityType).toBe(fromShardingAddress.entityType);
-        expect(fromConfigAddress.entityId).toBe(fromShardingAddress.entityId);
-        expect(fromConfigAddress.shardId.group).toBe(fromShardingAddress.shardId.group);
-        expect(fromConfigAddress.shardId.id).toBe(fromShardingAddress.shardId.id);
-      }),
+        }).pipe(Effect.provide(FromShardingCluster)),
+      }).pipe(
+        Effect.tap(({ fromConfigAddress, fromShardingAddress }) =>
+          Effect.sync(() => {
+            expect(fromConfigAddress.entityType).toBe(fromShardingAddress.entityType);
+            expect(fromConfigAddress.entityId).toBe(fromShardingAddress.entityId);
+            expect(fromConfigAddress.shardId.group).toBe(fromShardingAddress.shardId.group);
+            expect(fromConfigAddress.shardId.id).toBe(fromShardingAddress.shardId.id);
+          }),
+        ),
+      ),
     );
   }
 });

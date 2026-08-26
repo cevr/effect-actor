@@ -38,6 +38,8 @@ describe("SQL message deletion", () => {
         tag: "Run",
         id: "operation-100",
       });
+      // oxlint-disable-next-line effect/noNullish -- SQL NULL represents the absent tag on an acknowledgement row
+      const absentTag = null;
 
       yield* sql`
         INSERT INTO cluster_messages
@@ -49,7 +51,7 @@ describe("SQL message deletion", () => {
         INSERT INTO cluster_messages
           (id, message_id, shard_id, entity_type, entity_id, kind, tag, request_id, processed)
           VALUES
-          (${"101"}, ${"ack-101"}, ${"shard-1"}, ${"Actor"}, ${"a"}, ${1}, ${null}, ${"100"}, ${false})
+          (${"101"}, ${"ack-101"}, ${"shard-1"}, ${"Actor"}, ${"a"}, ${1}, ${absentTag}, ${"100"}, ${false})
       `;
       yield* sql`
         INSERT INTO cluster_replies

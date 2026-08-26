@@ -8,7 +8,7 @@ describe("Actor.entityIdCodec", () => {
   it.effect("round-trips arbitrary tuple components including the separator", () =>
     Effect.gen(function* () {
       const codec = Actor.entityIdCodec(TupleKey);
-      const key = ["ws-1", "sess-2", "branch:3"] as const;
+      const key: readonly [string, string, string] = ["ws-1", "sess-2", "branch:3"];
       const encoded = codec.encode(key);
       const decoded = yield* codec.decode(encoded);
       expect(decoded).toEqual(key);

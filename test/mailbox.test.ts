@@ -58,38 +58,44 @@ const LiveOnlyActor = Actor.fromEntity("MailboxLiveOnlyActor", {
 // internal `OperationHandle.send` plumbing. Mirrors `buildOutgoingRequestForSend`
 // in actor.ts but inlined here for unit-test clarity.
 const buildRequest = (
-  // eslint-disable-next-line typescript-eslint/no-explicit-any -- entity Rpcs erased
-  actor: { _meta: { entity: any } },
+  actor: typeof PersistedActor | typeof LiveOnlyActor,
   tag: string,
-  payload: Record<string, unknown>,
+  payload: { readonly item: string } | { readonly input: string },
 ): Effect.Effect<Message.OutgoingRequest<Rpc.Any>, never, Snowflake.Generator> =>
   Effect.gen(function* () {
     const snowflake = yield* Snowflake.Generator;
     const entity = actor._meta.entity;
-    // eslint-disable-next-line typescript-eslint/no-explicit-any -- erased
-    const rpc = entity.protocol.requests.get(tag);
-    const idValue = payload["item"] ?? payload["input"];
-    const toEntityIdString = (value: unknown): string => {
-      if (typeof value === "string") return value;
-      return "x";
-    };
-    const entityId = EntityId.make(toEntityIdString(idValue));
+    const rpcOption = Option.fromNullishOr(entity.protocol.requests.get(tag));
+    if (Option.isNone(rpcOption)) {
+      return yield* Effect.die(new Error(`Missing test RPC: ${tag}`));
+    }
+    const rpc = rpcOption.value;
+    let payloadId: string;
+    if ("item" in payload) {
+      payloadId = payload.item;
+    } else {
+      payloadId = payload.input;
+    }
+    const entityId = EntityId.make(payloadId);
     const address = EntityAddress.make({
       entityType: entity.type,
       entityId,
       shardId: ShardId.make("default", 1),
     });
-    // eslint-disable-next-line typescript-eslint/no-explicit-any -- class constructor
-    const payloadInstance = new rpc.payloadSchema(payload);
+    const payloadSchema: Schema.Top = rpc.payloadSchema;
+    const payloadInstance = payloadSchema.make(payload);
     return new Message.OutgoingRequest({
       rpc,
       // eslint-disable-next-line typescript-eslint/no-explicit-any -- empty fiber context for unit test
+      // oxlint-disable-next-line effect/noAs -- the upstream request constructor erases the empty fiber context
       context: Context.empty() as any,
       annotations: Context.empty(),
       envelope: Envelope.makeRequest({
         requestId: snowflake.nextUnsafe(),
         address,
+        // oxlint-disable-next-line effect/noAs -- the upstream envelope constructor erases the dynamic test tag
         tag: tag as never,
+        // oxlint-disable-next-line effect/noAs -- the upstream envelope constructor erases the dynamically constructed payload
         payload: payloadInstance as never,
         headers: Headers.empty,
       }),
@@ -156,31 +162,36 @@ describe("ActorMailboxLayer.fromConfig", () => {
 // drop a persisted envelope into the same MemoryDriver that the consumer's
 // poll loop reads from.
 // eslint-disable-next-line typescript-eslint/no-explicit-any -- Entity name param is invariant; production casts the same way at actor.ts
+// oxlint-disable-next-line effect/noAs -- the resolver seam erases the invariant entity name and RPC union
 const persistedEntity = PersistedActor._meta.entity as ClusterEntity.Entity<string, any>;
 
 describe("ActorMailbox cross-runtime: fromConfig producer -> Sharding consumer", () => {
   it.scopedLive("address resolved via fromConfig matches what the consumer expects", () =>
-    Effect.gen(function* () {
-      const fromConfigAddress = yield* Effect.gen(function* () {
+    Effect.all({
+      fromConfigAddress: Effect.gen(function* () {
         const resolver = yield* ActorAddressResolver;
         return resolver.resolveEntity(persistedEntity, EntityId.make("widget"));
       }).pipe(
         Effect.provide(
           ActorAddressResolverLayer.fromConfig.pipe(Layer.provide(ShardingConfig.layer())),
         ),
-      );
+      ),
 
-      const fromShardingAddress = yield* Effect.gen(function* () {
+      fromShardingAddress: Effect.gen(function* () {
         const resolver = yield* ActorAddressResolver;
         return resolver.resolveEntity(persistedEntity, EntityId.make("widget"));
       }).pipe(
         Effect.provide(
           ActorAddressResolverLayer.fromSharding.pipe(Layer.provide(TestRunner.layer)),
         ),
-      );
-
-      expect(fromConfigAddress.shardId.id).toBe(fromShardingAddress.shardId.id);
-      expect(fromConfigAddress.shardId.group).toBe(fromShardingAddress.shardId.group);
-    }),
+      ),
+    }).pipe(
+      Effect.tap(({ fromConfigAddress, fromShardingAddress }) =>
+        Effect.sync(() => {
+          expect(fromConfigAddress.shardId.id).toBe(fromShardingAddress.shardId.id);
+          expect(fromConfigAddress.shardId.group).toBe(fromShardingAddress.shardId.group);
+        }),
+      ),
+    ),
   );
 });

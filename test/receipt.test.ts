@@ -32,7 +32,7 @@ class OrderError extends Schema.TaggedError<OrderError>()("OrderError", {
 describe("ExecId", () => {
   test("is a branded string", () => {
     const execId = makeExecId("Process:my-key");
-    expect(typeof execId).toBe("string");
+    expect(execId).toBeTypeOf("string");
     expect(String(execId)).toBe("Process:my-key");
   });
 
@@ -117,43 +117,43 @@ describe("PeekResultSchema", () => {
   const decode = Schema.decodeUnknownSync(schema);
 
   test("round-trips Pending", () => {
-    const value = { _tag: "Pending" as const };
+    const value = { _tag: "Pending" } satisfies Schema.Schema.Type<typeof schema>;
     expect(decode(encode(value))).toEqual(value);
   });
 
   test("round-trips Success", () => {
-    const value = { _tag: "Success" as const, value: "hello" };
+    const value = { _tag: "Success", value: "hello" } satisfies Schema.Schema.Type<typeof schema>;
     expect(decode(encode(value))).toEqual(value);
   });
 
   test("round-trips Failure", () => {
-    const value = { _tag: "Failure" as const, error: 42 };
+    const value = { _tag: "Failure", error: 42 } satisfies Schema.Schema.Type<typeof schema>;
     expect(decode(encode(value))).toEqual(value);
   });
 
   test("round-trips Interrupted", () => {
-    const value = { _tag: "Interrupted" as const };
+    const value = { _tag: "Interrupted" } satisfies Schema.Schema.Type<typeof schema>;
     expect(decode(encode(value))).toEqual(value);
   });
 
   test("round-trips Defect", () => {
-    const value = { _tag: "Defect" as const, cause: "kaboom" };
+    const value = { _tag: "Defect", cause: "kaboom" } satisfies Schema.Schema.Type<typeof schema>;
     expect(decode(encode(value))).toEqual(value);
   });
 
   test("round-trips Suspended", () => {
-    const value = { _tag: "Suspended" as const };
+    const value = { _tag: "Suspended" } satisfies Schema.Schema.Type<typeof schema>;
     expect(decode(encode(value))).toEqual(value);
   });
 
   test("rejects unknown _tag", () => {
-    expect(() => decode({ _tag: "Unknown" } as unknown)).toThrow();
+    expect(() => decode({ _tag: "Unknown" })).toThrow();
   });
 });
 
 describe("decodeValue", () => {
   test("returns the raw value when no schema is given", () => {
-    expect(Effect.runSync(decodeValue(undefined, { item: "widget" }))).toEqual({
+    expect(Effect.runSync(decodeValue(void 0, { item: "widget" }))).toEqual({
       item: "widget",
     });
   });
@@ -196,8 +196,8 @@ describe("mapExitToPeekResult (entity — encoded ExitEncoded)", () => {
     );
     expect(result._tag).toBe("Failure");
     if (result._tag === "Failure") {
-      expect(result.error).toBeInstanceOf(OrderError);
-      expect((result.error as OrderError).message).toBe("boom");
+      const error = Schema.decodeUnknownSync(OrderError)(result.error);
+      expect(error.message).toBe("boom");
     }
   });
 

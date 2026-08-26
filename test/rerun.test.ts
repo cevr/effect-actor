@@ -67,128 +67,122 @@ describe("OperationHandle.rerun", () => {
     }).pipe(Effect.provide(TestCluster)),
   );
 
-  it.scopedLive("rerun clears the persisted envelope so peek returns Pending", () =>
-    Effect.gen(function* () {
-      const RerunActor = Actor.fromEntity("RerunPeek", {
-        Process: {
-          payload: { input: Schema.String },
-          success: Schema.String,
-          persisted: true,
-          id: (p: { input: string }) => p.input,
+  it.scopedLive("rerun clears the persisted envelope so peek returns Pending", () => {
+    const RerunActor = Actor.fromEntity("RerunPeek", {
+      Process: {
+        payload: { input: Schema.String },
+        success: Schema.String,
+        persisted: true,
+        id: (p: { input: string }) => p.input,
+      },
+    });
+
+    const handlers = Actor.toLayer(RerunActor, {
+      Process: ({ operation }) => Effect.succeed(`done: ${operation.input}`),
+    }).pipe(L.provideMerge(TestCluster));
+
+    return Effect.gen(function* () {
+      const makeClient = yield* RerunActor._meta.entity.client;
+      const client = makeClient("alpha");
+      yield* client.Process({ input: "alpha" });
+
+      const before = yield* RerunActor.Process.peek({ input: "alpha" });
+      expect(before._tag).toBe("Success");
+
+      yield* RerunActor.Process.rerun({ input: "alpha" });
+
+      const after = yield* RerunActor.Process.peek({ input: "alpha" });
+      expect(after._tag).toBe("Pending");
+    }).pipe(Effect.provide(handlers));
+  });
+
+  it.scopedLive("rerun + resend runs the handler again", () => {
+    const counter = Ref.makeUnsafe(0);
+
+    const RerunActor = Actor.fromEntity("RerunReplay", {
+      Process: {
+        payload: { input: Schema.String },
+        success: Schema.Finite,
+        persisted: true,
+        id: (p: { input: string }) => p.input,
+      },
+    });
+
+    const handlers = Actor.toLayer(RerunActor, {
+      Process: () => Ref.updateAndGet(counter, (n) => n + 1),
+    }).pipe(L.provideMerge(TestCluster));
+
+    return Effect.gen(function* () {
+      const makeClient = yield* RerunActor._meta.entity.client;
+      const client = makeClient("once");
+      yield* client.Process({ input: "once" });
+      const first = yield* RerunActor.Process.peek({ input: "once" });
+      expect(first._tag).toBe("Success");
+      if (first._tag === "Success") expect(first.value).toBe(1);
+
+      yield* RerunActor.Process.rerun({ input: "once" });
+
+      // Re-send via the same client — dedup index should be cleared, allowing
+      // a fresh handler invocation.
+      yield* client.Process({ input: "once" });
+
+      const second = yield* RerunActor.Process.peek({ input: "once" });
+      expect(second._tag).toBe("Success");
+      if (second._tag === "Success") expect(second.value).toBe(2);
+    }).pipe(Effect.provide(handlers));
+  });
+
+  it.scopedLive("rerun with divergent id clears only the target execId", () => {
+    // entity id is the dedup bucket; primaryKey diverges so two execIds
+    // share a single entityId.
+    const RerunActor = Actor.fromEntity("RerunDiverge", {
+      Trigger: {
+        payload: {
+          dedup: Schema.String,
+          action: Schema.String,
         },
+        success: Schema.String,
+        persisted: true,
+        id: (p: { dedup: string; action: string }) => ({
+          entityId: p.dedup,
+          primaryKey: `${p.dedup}:${p.action}`,
+        }),
+      },
+    });
+
+    const handlers = Actor.toLayer(RerunActor, {
+      Trigger: ({ operation }) => Effect.succeed(`fired:${operation.action}`),
+    }).pipe(L.provideMerge(TestCluster));
+
+    return Effect.gen(function* () {
+      const makeClient = yield* RerunActor._meta.entity.client;
+      const client = makeClient("k");
+      yield* client.Trigger({ dedup: "k", action: "open" });
+      yield* client.Trigger({ dedup: "k", action: "close" });
+
+      const openBefore = yield* RerunActor.Trigger.peek({
+        dedup: "k",
+        action: "open",
       });
-
-      const handlers = Actor.toLayer(RerunActor, {
-        Process: ({ operation }) => Effect.succeed(`done: ${operation.input}`),
+      const closeBefore = yield* RerunActor.Trigger.peek({
+        dedup: "k",
+        action: "close",
       });
+      expect(openBefore._tag).toBe("Success");
+      expect(closeBefore._tag).toBe("Success");
 
-      return yield* Effect.gen(function* () {
-        const makeClient = yield* RerunActor._meta.entity.client;
-        const client = makeClient("alpha");
-        yield* client.Process({ input: "alpha" });
+      yield* RerunActor.Trigger.rerun({ dedup: "k", action: "open" });
 
-        const before = yield* RerunActor.Process.peek({ input: "alpha" });
-        expect(before._tag).toBe("Success");
-
-        yield* RerunActor.Process.rerun({ input: "alpha" });
-
-        const after = yield* RerunActor.Process.peek({ input: "alpha" });
-        expect(after._tag).toBe("Pending");
-      }).pipe(Effect.provide(handlers));
-    }).pipe(Effect.provide(TestCluster)),
-  );
-
-  it.scopedLive("rerun + resend runs the handler again", () =>
-    Effect.gen(function* () {
-      const counter = yield* Ref.make(0);
-
-      const RerunActor = Actor.fromEntity("RerunReplay", {
-        Process: {
-          payload: { input: Schema.String },
-          success: Schema.Finite,
-          persisted: true,
-          id: (p: { input: string }) => p.input,
-        },
+      const openAfter = yield* RerunActor.Trigger.peek({
+        dedup: "k",
+        action: "open",
       });
-
-      const handlers = Actor.toLayer(RerunActor, {
-        Process: () => Ref.updateAndGet(counter, (n) => n + 1),
+      const closeAfter = yield* RerunActor.Trigger.peek({
+        dedup: "k",
+        action: "close",
       });
-
-      return yield* Effect.gen(function* () {
-        const makeClient = yield* RerunActor._meta.entity.client;
-        const client = makeClient("once");
-        yield* client.Process({ input: "once" });
-        const first = yield* RerunActor.Process.peek({ input: "once" });
-        expect(first._tag).toBe("Success");
-        if (first._tag === "Success") expect(first.value).toBe(1);
-
-        yield* RerunActor.Process.rerun({ input: "once" });
-
-        // Re-send via the same client — dedup index should be cleared, allowing
-        // a fresh handler invocation.
-        yield* client.Process({ input: "once" });
-
-        const second = yield* RerunActor.Process.peek({ input: "once" });
-        expect(second._tag).toBe("Success");
-        if (second._tag === "Success") expect(second.value).toBe(2);
-      }).pipe(Effect.provide(handlers));
-    }).pipe(Effect.provide(TestCluster)),
-  );
-
-  it.scopedLive("rerun with divergent id clears only the target execId", () =>
-    Effect.gen(function* () {
-      // entity id is the dedup bucket; primaryKey diverges so two execIds
-      // share a single entityId.
-      const RerunActor = Actor.fromEntity("RerunDiverge", {
-        Trigger: {
-          payload: {
-            dedup: Schema.String,
-            action: Schema.String,
-          },
-          success: Schema.String,
-          persisted: true,
-          id: (p: { dedup: string; action: string }) => ({
-            entityId: p.dedup,
-            primaryKey: `${p.dedup}:${p.action}`,
-          }),
-        },
-      });
-
-      const handlers = Actor.toLayer(RerunActor, {
-        Trigger: ({ operation }) => Effect.succeed(`fired:${operation.action}`),
-      });
-
-      return yield* Effect.gen(function* () {
-        const makeClient = yield* RerunActor._meta.entity.client;
-        const client = makeClient("k");
-        yield* client.Trigger({ dedup: "k", action: "open" });
-        yield* client.Trigger({ dedup: "k", action: "close" });
-
-        const openBefore = yield* RerunActor.Trigger.peek({
-          dedup: "k",
-          action: "open",
-        });
-        const closeBefore = yield* RerunActor.Trigger.peek({
-          dedup: "k",
-          action: "close",
-        });
-        expect(openBefore._tag).toBe("Success");
-        expect(closeBefore._tag).toBe("Success");
-
-        yield* RerunActor.Trigger.rerun({ dedup: "k", action: "open" });
-
-        const openAfter = yield* RerunActor.Trigger.peek({
-          dedup: "k",
-          action: "open",
-        });
-        const closeAfter = yield* RerunActor.Trigger.peek({
-          dedup: "k",
-          action: "close",
-        });
-        expect(openAfter._tag).toBe("Pending");
-        expect(closeAfter._tag).toBe("Success");
-      }).pipe(Effect.provide(handlers));
-    }).pipe(Effect.provide(TestCluster)),
-  );
+      expect(openAfter._tag).toBe("Pending");
+      expect(closeAfter._tag).toBe("Success");
+    }).pipe(Effect.provide(handlers));
+  });
 });

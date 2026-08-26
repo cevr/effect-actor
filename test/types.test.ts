@@ -125,6 +125,7 @@ describe("type-level tests", () => {
 
   test("Count.send returns ExecId<number, never>", () => {
     const _check = (): Effect.Effect<ExecId<number, never>, unknown, unknown> =>
+      // oxlint-disable-next-line effect/noAs, effect/noNullish -- the zero-payload operation uses never at this type-test seam
       Order.Count.send(undefined as never);
     void _check;
   });
@@ -290,6 +291,7 @@ describe("type-level tests", () => {
     const _check = Effect.gen(function* () {
       yield* Effect.void;
       // @ts-expect-error — registerState now takes a State<A>, not {get, watch}
+      // oxlint-disable-next-line effect/noNullish -- the invalid legacy fixture includes an absent watch value
       yield* Actor.registerState({ get: Effect.succeed(0), watch: undefined });
     });
     void _check;
@@ -510,7 +512,7 @@ describe("entity toLayer regression — current address context exclusion", () =
         return {
           Place: ({ operation }) => Effect.succeed(`${address.entityId}:${operation.item}`),
           Count: () => Effect.succeed(1),
-        } as const;
+        };
       }),
     );
 

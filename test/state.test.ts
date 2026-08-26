@@ -14,7 +14,7 @@ const makeCounter = (initial: number) =>
     const state = yield* State.make(SubscriptionRef.get(ref), (value: number) =>
       SubscriptionRef.set(ref, value),
     );
-    return { state, ref } as const;
+    return { state, ref };
   });
 
 describe("State", () => {
@@ -55,7 +55,7 @@ describe("State", () => {
   it.effect("modify returns the old value and sets the new", () =>
     Effect.gen(function* () {
       const { state } = yield* makeCounter(100);
-      const previous = yield* State.modify(state, (n) => [n, n + 1] as const);
+      const previous = yield* State.modify(state, (n): readonly [number, number] => [n, n + 1]);
       expect(previous).toBe(100);
       expect(yield* State.get(state)).toBe(101);
     }),
@@ -65,7 +65,7 @@ describe("State", () => {
     Effect.gen(function* () {
       const { state } = yield* makeCounter(0);
       yield* Effect.forEach(Arr.range(1, 100), () => State.update(state, (n) => n + 1), {
-        concurrency: "unbounded",
+        concurrency: 100,
       });
       expect(yield* State.get(state)).toBe(100);
     }),
@@ -134,6 +134,7 @@ describe("State", () => {
       const { state } = yield* makeCounter(0);
       expect(State.isState(state)).toBe(true);
       expect(State.isState({})).toBe(false);
+      // oxlint-disable-next-line effect/noNullish -- the public guard must reject null input
       expect(State.isState(null)).toBe(false);
     }),
   );

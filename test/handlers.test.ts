@@ -46,7 +46,7 @@ const GenActorTest = Layer.provide(
     GenActor,
     Effect.succeed({
       Compute: ({ operation }: { operation: { x: number } }) => Effect.succeed(operation.x * 10),
-    } as const),
+    }),
   ),
   TestShardingConfig,
 );
@@ -91,6 +91,7 @@ describe("Actor.toLayer", () => {
 
   test("handler return value becomes the RPC reply — no explicit .reply()", () =>
     Effect.gen(function* () {
+      // oxlint-disable-next-line effect/noAs, effect/noNullish -- the zero-payload operation uses never at this public call seam
       const result = yield* Counter.GetCount.execute(undefined as never);
       expect(result).toBe("hello");
     }));

@@ -248,7 +248,7 @@ describe("send + waitFor", () => {
   it.scopedLive.layer(WaitTargetTest)("send works for workflow", () =>
     Effect.gen(function* () {
       const execId = yield* WaitTarget.send({ id: "w1" });
-      expect(typeof execId).toBe("string");
+      expect(execId).toBeTypeOf("string");
     }),
   );
 
@@ -538,7 +538,7 @@ describe("step.run — durable compensation", () => {
           DurableCompensation.compensation.decidePending(executionId, "Retry"),
           DurableCompensation.compensation.decidePending(executionId, "Stop"),
         ].map(Effect.result),
-        { concurrency: "unbounded" },
+        { concurrency: 2 },
       );
       expect(results.filter(Result.isSuccess)).toHaveLength(1);
       expect(results.filter(Result.isFailure)).toHaveLength(1);

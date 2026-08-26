@@ -94,7 +94,7 @@ describe("cluster integration", () => {
         Array.from({ length: 20 }, () =>
           OrderActor.Place.send({ item: "herd", qty: 1 }).pipe(Effect.exit),
         ),
-        { concurrency: "unbounded" },
+        { concurrency: 20 },
       );
 
       expect(exits.every(Exit.isSuccess)).toBe(true);

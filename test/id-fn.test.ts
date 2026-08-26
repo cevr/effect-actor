@@ -12,7 +12,8 @@ describe("OperationDef.id (string return)", () => {
     });
     const def = A._meta.definitions["Op"];
     expect(def.id).toBeDefined();
-    const r = (def.id as (p: unknown) => unknown)({ x: "k" });
+    const id: (payload: { readonly x: string }) => string = def.id;
+    const r = id({ x: "k" });
     expect(r).toBe("k");
   });
 });
@@ -26,7 +27,11 @@ describe("OperationDef.id (object return)", () => {
       },
     });
     const def = A._meta.definitions["Op"];
-    const r = (def.id as (p: unknown) => { entityId: string; primaryKey?: string })({ x: "k" });
+    const id: (payload: { readonly x: string }) => {
+      readonly entityId: string;
+      readonly primaryKey?: string;
+    } = def.id;
+    const r = id({ x: "k" });
     expect(r.entityId).toBe("k");
     expect(r.primaryKey).toBeUndefined();
   });
@@ -42,7 +47,11 @@ describe("OperationDef.id (object return)", () => {
       },
     });
     const def = A._meta.definitions["Op"];
-    const r = (def.id as (p: unknown) => { entityId: string; primaryKey?: string })({
+    const id: (payload: { readonly dedup: string; readonly action: string }) => {
+      readonly entityId: string;
+      readonly primaryKey?: string;
+    } = def.id;
+    const r = id({
       dedup: "k",
       action: "trigger",
     });
