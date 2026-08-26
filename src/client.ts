@@ -40,14 +40,10 @@
  *   end-to-end: `send` routes the prebuilt request through the INJECTED mailbox,
  *   and `peek / flush / redeliver / pruneWorkflow / withTransaction` operate over its bundled storage.
  */
-import type { Schema } from "effect";
-import { Context, Effect, Layer, Option, Predicate } from "effect";
+import { Context, Effect, Layer, Predicate } from "effect";
 import {
-  ClusterSchema,
   type Entity as ClusterEntity,
   type EntityAddress,
-  Envelope,
-  Message,
   MessageStorage,
   type Sharding,
   type ShardingConfig,
@@ -60,7 +56,6 @@ import type {
   MalformedMessage,
   PersistenceError,
 } from "effect/unstable/cluster/ClusterError";
-import * as Headers from "effect/unstable/http/Headers";
 import type { Rpc, RpcClient } from "effect/unstable/rpc";
 import {
   ActorAddressResolver,
@@ -76,37 +71,8 @@ import {
 import { ActorSenderLayer } from "./actor-sender.js";
 import { ActorDefect } from "./actor-defect.js";
 import { type ExecId, type PeekResult, type ReplyDefs, peekStoredReply } from "./receipt.js";
-import type { Invocation } from "./operation.js";
-import { isOpaquePayload } from "./operation.js";
-
-interface ErasedRequestOptions {
-  readonly requestId: Snowflake.Snowflake;
-  readonly address: EntityAddress.EntityAddress;
-  readonly tag: string;
-  readonly payload: unknown;
-  readonly headers: Headers.Headers;
-}
-
-function makeErasedRequest(options: ErasedRequestOptions): Envelope.Request<Rpc.AnyWithProps>;
-function makeErasedRequest(options: ErasedRequestOptions): unknown {
-  return Reflect.apply(Envelope.makeRequest, Envelope, [options]);
-}
-
-interface ErasedOutgoingRequestOptions {
-  readonly rpc: Rpc.AnyWithProps;
-  readonly context: Context.Context<never>;
-  readonly envelope: Envelope.Request<Rpc.AnyWithProps>;
-  readonly lastReceivedReply: Option.Option<never>;
-  readonly respond: () => Effect.Effect<void>;
-  readonly annotations: Context.Context<never>;
-}
-
-function makeErasedOutgoingRequest(
-  options: ErasedOutgoingRequestOptions,
-): Message.OutgoingRequest<Rpc.Any>;
-function makeErasedOutgoingRequest(options: ErasedOutgoingRequestOptions): unknown {
-  return Reflect.construct(Message.OutgoingRequest, [options]);
-}
+import type { Invocation } from "./internal/invocation-compiler.js";
+import { compileOutgoingRequest } from "./internal/invocation-compiler.js";
 
 function eraseTestRpcEffect<Candidate>(candidate: Candidate): Effect.Effect<void>;
 function eraseTestRpcEffect<Candidate>(candidate: Candidate): unknown {
@@ -127,75 +93,6 @@ export const resolveEntityAddress = (
   entity: ClusterEntity.Entity<string, any>,
   actorId: string,
 ): EntityAddress.EntityAddress => resolver.resolveEntity(entity, actorId);
-
-// ── OutgoingRequest builder for .send dispatch ───────────────────────────
-// Produces the same OutgoingRequest shape as upstream `Sharding.makeClient`
-// but bypasses Sharding entirely so the host doesn't need a registered
-// entity manager. The mailbox's `send` decides what to do with the request
-// (saveRequest vs. sendOutgoing).
-//
-// Captures fiber.currentContext into the OutgoingRequest to mirror upstream's
-// `makeClient`. MessageStorage duplicate decoding reads `message.context` —
-// empty context is wrong for any schema that requires services at decode time.
-export const buildOutgoingRequestForSend = (
-  invocation: Invocation,
-  address: EntityAddress.EntityAddress,
-  snowflakeGen: Snowflake.Generator["Service"],
-): Effect.Effect<Message.OutgoingRequest<Rpc.Any>> =>
-  Effect.gen(function* () {
-    const { entity, tag, definition, operation } = invocation;
-    const rpc = entity.protocol.requests.get(tag);
-    if (!rpc) {
-      return yield* Effect.die(
-        new ActorDefect({
-          message: `effect-encore: rpc "${tag}" not found on entity "${entity.type}"`,
-        }),
-      );
-    }
-    const payloadSchema: Schema.Top = rpc.payloadSchema;
-
-    let payload;
-    if (!definition.payload) {
-      // Zero-payload op. compileRpc still creates an EmptyPayloadClass.
-      payload = payloadSchema.make({});
-    } else if (isOpaquePayload(definition.payload)) {
-      payload = operation["_payload"];
-    } else {
-      const { _tag: _t, ...fields } = operation;
-      void _t;
-      payload = payloadSchema.make(fields);
-    }
-
-    const fiberContext = yield* Effect.context<never>();
-
-    const envelope = makeErasedRequest({
-      requestId: snowflakeGen.nextUnsafe(),
-      address,
-      tag,
-      payload,
-      headers: Headers.empty,
-    });
-
-    // Mirror upstream `Sharding.makeClient` annotation derivation
-    // (`Sharding.js:702`): `rpc.annotations` is the static annotation context,
-    // but the per-request `OutgoingRequest.annotations` is computed by reading
-    // `ClusterSchema.Dynamic` (a transformer fn) from the static annotations
-    // and applying it to the envelope. The Persisted gate at sendOutgoing reads
-    // `message.annotations` for OutgoingRequest specifically — `Context.empty()`
-    // here would silently route persisted requests as non-persisted.
-    const rpcAnnotations: Context.Context<never> = rpc.annotations;
-    const dynamicFn = Context.get(rpcAnnotations, ClusterSchema.Dynamic);
-    const annotations = dynamicFn(rpcAnnotations, envelope);
-
-    return makeErasedOutgoingRequest({
-      rpc,
-      context: fiberContext,
-      envelope,
-      lastReceivedReply: Option.none(),
-      respond: () => Effect.void,
-      annotations,
-    });
-  });
 
 // Test ActorMailbox impl that routes a prebuilt OutgoingRequest back through
 // the entity's per-entity test rpcClient (with `{ discard: true }`). Used by
@@ -310,7 +207,7 @@ const makeClientService: Effect.Effect<
     send: (invocation) =>
       Effect.gen(function* () {
         const address = resolve(invocation.entity, invocation.identity.entityId);
-        const request = yield* buildOutgoingRequestForSend(invocation, address, snowflakeGen);
+        const request = yield* compileOutgoingRequest(invocation, address, snowflakeGen);
         yield* mailbox.send(request);
         return invocation.identity.execId;
       }),

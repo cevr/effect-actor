@@ -1,5 +1,4 @@
 import {
-  ClusterSchema,
   type Entity as ClusterEntity,
   Entity,
   type EntityAddress,
@@ -8,7 +7,6 @@ import {
   type ShardingConfig,
   Snowflake,
 } from "effect/unstable/cluster";
-import * as DeliverAt from "effect/unstable/cluster/DeliverAt";
 import { CurrentAddress, type CurrentRunnerAddress } from "effect/unstable/cluster/Entity";
 import type {
   AlreadyProcessingMessage,
@@ -18,7 +16,6 @@ import type {
   PersistenceError,
 } from "effect/unstable/cluster/ClusterError";
 import type { Rpc, RpcClient, RpcGroup } from "effect/unstable/rpc";
-import { Rpc as RpcMod } from "effect/unstable/rpc";
 import { Workflow as UpstreamWorkflow } from "effect/unstable/workflow";
 import { ActorAddressResolver, ActorAddressResolverLayer } from "./actor-address-resolver.js";
 import { assembleActorRuntime, attachFreshService } from "./actor-runtime.js";
@@ -41,12 +38,11 @@ import {
   Option,
   Pipeable,
   Predicate,
-  PrimaryKey,
   Schedule,
   Schema,
   Stream,
 } from "effect";
-import type { DateTime, Scope } from "effect";
+import type { Scope } from "effect";
 import { dual } from "effect/Function";
 import type {
   CompensationDecision,
@@ -81,14 +77,19 @@ import {
   resolveEntityAddress,
   layer as ClientLayer,
 } from "./client.js";
-import type { EntityIdReturn, OperationDef, OperationDefs } from "./operation.js";
+import type {
+  EntityIdReturn,
+  OperationDef,
+  OperationDefs,
+} from "./internal/invocation-compiler.js";
 import {
   compileInvocation,
+  compileRpc,
   isOpaquePayload,
   makeOperationValue,
   payloadFromOperation,
   resolveId,
-} from "./operation.js";
+} from "./internal/invocation-compiler.js";
 import {
   ActorStateRegistry,
   listStateEntityIds,
@@ -123,10 +124,8 @@ const layerPassthrough = <ROut, E, RIn>(
 ): Layer.Layer<ROut | RIn, E, RIn> =>
   Layer.merge(Layer.effectContext(Effect.context<RIn>()), layer);
 
-// Payload classification (`isOpaquePayload`) and the id-fn resolver
-// (`resolveId`) live in `client.ts` alongside the transport seam so the runtime
-// dependency stays one-directional (`actor.ts` → `client.ts`). They are
-// imported at the top of this file.
+// Payload classification and identity rules live in the internal Invocation
+// compiler. Actor and Client consume the same compiled facts.
 
 // ── Operation DSL ──────────────────────────────────────────────────────────
 
@@ -727,77 +726,9 @@ export type EntityActor<
 
 /* oxlint-disable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noUnknownParameters, effect/noUnsafeDictionaryType -- This compiler erases schema-specific RPC types once and restores the public generic actor interface through overloads. */
 
-const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any => {
-  const options: Record<string, unknown> = {};
-  const payload = def["payload"];
-  const daFn = def["deliverAt"];
-
-  // PrimaryKey.symbol returns the dedup key cluster uses for message dedup.
-  // That's the `primaryKey` portion of resolveId — for string-form `id`,
-  // primaryKey === entityId; for object-form, divergent. `id` is required
-  // on every OperationDef.
-  const pkOf = (p: unknown) => resolveId(def, p, tag).primaryKey;
-
-  if (payload) {
-    if (Schema.isSchema(payload)) {
-      options["payload"] = payload;
-    } else {
-      const fields = payload;
-
-      const Base = Schema.Class<Record<string, unknown>>(
-        `effect-encore/${actorName}/${tag}/Payload`,
-      )(fields);
-
-      class PayloadClass extends Base {}
-
-      const proto = PayloadClass.prototype as Record<string | symbol, unknown>;
-
-      proto[PrimaryKey.symbol] = function (this: unknown) {
-        return pkOf(this);
-      };
-
-      if (daFn) {
-        proto[DeliverAt.symbol] = function (this: unknown) {
-          return (daFn as Function)(this) as DateTime.DateTime;
-        };
-      }
-
-      options["payload"] = PayloadClass;
-    }
-  } else {
-    // Zero-payload operations still need PrimaryKey.symbol for storage indexing
-    const Base = Schema.Class<Record<string, unknown>>(`effect-encore/${actorName}/${tag}/Payload`)(
-      {},
-    );
-
-    class EmptyPayloadClass extends Base {}
-
-    (EmptyPayloadClass.prototype as Record<string | symbol, unknown>)[PrimaryKey.symbol] =
-      function () {
-        return pkOf(Schema.Void.make());
-      };
-
-    options["payload"] = EmptyPayloadClass;
-  }
-
-  if (def["success"]) options["success"] = def["success"];
-  if (def["error"]) options["error"] = def["error"];
-
-  let rpc: Rpc.Any = (RpcMod.make as Function)(tag, options) as Rpc.Any;
-
-  if (def["persisted"]) {
-    rpc = (rpc as unknown as { annotate: Function }).annotate(
-      ClusterSchema.Persisted,
-      true,
-    ) as Rpc.Any;
-  }
-
-  return rpc;
-};
-
 // ── peek — internal implementation ───────────────────────────────────────
 //
-// The OutgoingRequest builder (`buildOutgoingRequestForSend`), the test-mailbox
+// The outgoing request compiler, the test-mailbox
 // router (`makeTestMailboxImpl`), the address helper (`resolveEntityAddress`),
 // and the `flush`/`redeliver` storage ops all moved INSIDE the `Client` seam
 // (`client.ts`, ADR-0002). `actor.ts` imports the ones it still needs

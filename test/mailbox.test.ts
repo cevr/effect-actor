@@ -55,7 +55,7 @@ const LiveOnlyActor = Actor.fromEntity("MailboxLiveOnlyActor", {
 });
 
 // Build a minimal OutgoingRequest by hand so the test does not depend on the
-// internal `OperationHandle.send` plumbing. Mirrors `buildOutgoingRequestForSend`
+// internal `OperationHandle.send` plumbing. Mirrors the Invocation compiler
 // in actor.ts but inlined here for unit-test clarity.
 const buildRequest = (
   actor: typeof PersistedActor | typeof LiveOnlyActor,
