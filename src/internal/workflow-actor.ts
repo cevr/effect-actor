@@ -19,16 +19,15 @@ import {
   makeWorkflowExecution,
   pendingCompensation,
 } from "../step.js";
-import type { CompensationDecision, SignalDefs, WorkflowSignal } from "../step.js";
-import { waitFor, watch } from "./execution-observation.js";
 import type {
-  ActorClientFactory,
-  ActorClientService,
-  ActorRef,
-  OperationBrand,
-  WorkflowActor,
-  WorkflowDef,
-} from "../actor.js";
+  CompensationDecision,
+  CompensationDecisionError,
+  PendingCompensation,
+  SignalDefs,
+  WorkflowSignal,
+} from "../step.js";
+import { waitFor, watch } from "./execution-observation.js";
+import type { ActorClientFactory, ActorClientService, ActorRef, OperationBrand } from "../actor.js";
 import type { EntityIdReturn } from "./invocation-compiler.js";
 
 const WORKFLOW_RESERVED_KEYS = new Set<string>([
@@ -54,13 +53,56 @@ const WORKFLOW_RESERVED_KEYS = new Set<string>([
   "pipe",
 ]);
 
-type WorkflowPayloadType<Payload extends Schema.Struct.Fields> = {
+// ── Workflow types ────────────────────────────────────────────────────────
+
+type SignalConstructors<
+  Payload extends UpstreamWorkflow.AnyStructSchema,
+  Defs extends SignalDefs,
+> = {
+  readonly [K in keyof Defs & string]: WorkflowSignal<
+    Payload,
+    Defs[K] extends { success: infer S extends Schema.Top } ? S : typeof Schema.Void,
+    Defs[K] extends { error: infer E extends Schema.Top } ? E : typeof Schema.Never
+  >;
+};
+
+// ── Workflow Definition ────────────────────────────────────────────────────
+
+export interface WorkflowDef<
+  Payload extends Schema.Struct.Fields = Schema.Struct.Fields,
+  Success extends Schema.Top = typeof Schema.Void,
+  Error extends Schema.Top = typeof Schema.Never,
+  Signals extends SignalDefs = {},
+> {
+  readonly payload: Payload;
+  readonly success?: Success;
+  readonly error?: Error;
+  /**
+   * Workflow `id` fn returns string only — workflows have no entity dimension,
+   * so the divergent `{entityId, primaryKey}` form is rejected at the type
+   * level. The string is used as the workflow's idempotency / execution key.
+   */
+  readonly id: (payload: {
+    readonly [K in keyof Payload]: Schema.Schema.Type<
+      Payload[K] extends Schema.Top ? Payload[K] : never
+    >;
+  }) => string;
+  readonly signals?: Signals;
+  // eslint-disable-next-line typescript-eslint/no-explicit-any
+  readonly suspendedRetrySchedule?: Schedule.Schedule<any, unknown>;
+  readonly captureDefects?: boolean;
+  readonly suspendOnFailure?: boolean;
+}
+
+// ── Workflow typed defs ───────────────────────────────────────────────────
+
+export type WorkflowPayloadType<Payload extends Schema.Struct.Fields> = {
   readonly [K in keyof Payload]: Schema.Schema.Type<
     Payload[K] extends Schema.Top ? Payload[K] : never
   >;
 };
 
-type WorkflowRunDefs<
+export type WorkflowRunDefs<
   Payload extends Schema.Struct.Fields,
   Success extends Schema.Top,
   Error extends Schema.Top,
@@ -82,6 +124,187 @@ type WorkflowPeekResult<Success extends Schema.Top, Error extends Schema.Top> = 
   Success["Type"],
   Error["Type"]
 >;
+
+// ── WorkflowActor ───────────────────────────────────────────────────
+
+export type WorkflowActor<
+  Name extends string,
+  Payload extends Schema.Struct.Fields,
+  Success extends Schema.Top,
+  Error extends Schema.Top,
+  Signals extends SignalDefs = {},
+> = SignalConstructors<Schema.Struct<Payload>, Signals> & {
+  readonly _tag: "WorkflowActor";
+  readonly name: Name;
+  readonly type: `Workflow/${Name}`;
+  readonly _meta: {
+    readonly name: Name;
+    readonly workflow: UpstreamWorkflow.Workflow<Name, Schema.Struct<Payload>, Success, Error>;
+  };
+  readonly Context: Context.Service<
+    ActorClientService<Name, WorkflowRunDefs<Payload, Success, Error>>,
+    ActorClientFactory<Name, WorkflowRunDefs<Payload, Success, Error>>
+  >;
+  /** Create a durable signal whose name is selected at runtime. */
+  readonly signal: <
+    S extends Schema.Top = typeof Schema.Void,
+    E extends Schema.Top = typeof Schema.Never,
+  >(
+    name: string,
+    options?: { readonly success?: S; readonly error?: E },
+  ) => WorkflowSignal<Schema.Struct<Payload>, S, E>;
+  /**
+   * Run the workflow for the given payload, awaiting its terminal result.
+   * Idempotent on `payload` — same payload yields same execution.
+   */
+  readonly execute: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => Effect.Effect<
+    Schema.Schema.Type<Success>,
+    Schema.Schema.Type<Error>,
+    ActorClientService<Name, WorkflowRunDefs<Payload, Success, Error>>
+  >;
+  /**
+   * Fire-and-forget: enqueues the workflow run and returns its `ExecId`.
+   */
+  readonly send: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => Effect.Effect<
+    ExecId<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>,
+    never,
+    ActorClientService<Name, WorkflowRunDefs<Payload, Success, Error>>
+  >;
+  /**
+   * Pure derivation: compute the `ExecId` for a payload without enqueuing.
+   */
+  readonly executionId: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => Effect.Effect<ExecId<Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>>;
+  readonly peek: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => Effect.Effect<
+    WorkflowPeekResult<Success, Error>,
+    never,
+    WorkflowReadServices<Success, Error>
+  >;
+  /** Inspect a workflow run by its durable execution identifier. */
+  readonly peekAt: (
+    executionId: string,
+  ) => Effect.Effect<
+    WorkflowPeekResult<Success, Error>,
+    never,
+    WorkflowReadServices<Success, Error>
+  >;
+  readonly watch: (
+    payload: WorkflowPayloadType<Payload>,
+    options?: { readonly interval?: Duration.Input },
+  ) => Stream.Stream<
+    WorkflowPeekResult<Success, Error>,
+    never,
+    WorkflowReadServices<Success, Error>
+  >;
+  /**
+   * Watch a workflow run by its durable execution identifier.
+   * An unknown identifier stays Pending. Apply a stream timeout when the
+   * caller cannot wait without a bound.
+   */
+  readonly watchAt: (
+    executionId: string,
+    options?: { readonly interval?: Duration.Input },
+  ) => Stream.Stream<
+    WorkflowPeekResult<Success, Error>,
+    never,
+    WorkflowReadServices<Success, Error>
+  >;
+  readonly waitFor: (
+    payload: WorkflowPayloadType<Payload>,
+    options?: {
+      readonly filter?: (result: WorkflowPeekResult<Success, Error>) => boolean;
+      // eslint-disable-next-line typescript-eslint/no-explicit-any
+      readonly schedule?: Schedule.Schedule<any, unknown>;
+    },
+  ) => Effect.Effect<
+    WorkflowPeekResult<Success, Error>,
+    never,
+    WorkflowReadServices<Success, Error>
+  >;
+  /**
+   * Wait for a workflow run selected by its durable execution identifier.
+   * An unknown identifier stays Pending. Apply `Effect.timeout` when the
+   * caller cannot wait without a bound.
+   */
+  readonly waitForAt: (
+    executionId: string,
+    options?: {
+      readonly filter?: (result: WorkflowPeekResult<Success, Error>) => boolean;
+      // eslint-disable-next-line typescript-eslint/no-explicit-any
+      readonly schedule?: Schedule.Schedule<any, unknown>;
+    },
+  ) => Effect.Effect<
+    WorkflowPeekResult<Success, Error>,
+    never,
+    WorkflowReadServices<Success, Error>
+  >;
+  /**
+   * Surgically clear this execution's cached run reply + activity replies so
+   * the next `.execute(samePayload)` runs from scratch.
+   *
+   * Composes `WorkflowEngine.interrupt` (signals the running fiber, no-op if
+   * completed) with the Client lifecycle operation (wipes run reply +
+   * cached activity replies stored at the workflow's `EntityAddress`).
+   *
+   * Caveat: rerun-while-running interrupts the fiber and clears state, but
+   * cleanup is best-effort eventual — the next `.execute(samePayload)` may
+   * queue behind the interrupted fiber's wind-down. No data corruption, just
+   * transient ordering.
+   */
+  readonly rerun: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => Effect.Effect<void, PersistenceError, Client | WorkflowEngine>;
+  /** Remove one completed workflow execution and its durable clock state. */
+  readonly prune: (executionId: string) => Effect.Effect<void, PersistenceError, Client>;
+  readonly interrupt: (executionId: string) => Effect.Effect<void, never, WorkflowEngine>;
+  readonly resume: (executionId: string) => Effect.Effect<void, never, WorkflowEngine>;
+  readonly compensation: {
+    readonly pending: (
+      executionId: string,
+    ) => Effect.Effect<
+      Option.Option<PendingCompensation>,
+      never,
+      WorkflowReadServices<Success, Error>
+    >;
+    readonly decide: (
+      executionId: string,
+      stepId: string,
+      attempt: number,
+      decision: CompensationDecision,
+    ) => Effect.Effect<void, CompensationDecisionError, WorkflowReadServices<Success, Error>>;
+    readonly decidePending: (
+      executionId: string,
+      decision: CompensationDecision,
+    ) => Effect.Effect<void, CompensationDecisionError, WorkflowReadServices<Success, Error>>;
+    readonly retry: (
+      executionId: string,
+      stepId: string,
+      attempt: number,
+    ) => Effect.Effect<void, CompensationDecisionError, WorkflowReadServices<Success, Error>>;
+    readonly stop: (
+      executionId: string,
+      stepId: string,
+      attempt: number,
+    ) => Effect.Effect<void, CompensationDecisionError, WorkflowReadServices<Success, Error>>;
+  };
+  /**
+   * Escape hatch: produce the underlying `OperationValue<"Run", ...>` for the
+   * payload. Useful for external code that needs to round-trip the value
+   * (e.g., admin UIs replaying a captured payload).
+   */
+  readonly make: (
+    payload: WorkflowPayloadType<Payload>,
+  ) => { readonly _tag: "Run" } & WorkflowPayloadType<Payload> &
+    OperationBrand<Name, "Run", Schema.Schema.Type<Success>, Schema.Schema.Type<Error>>;
+  readonly $is: (tag: "Run") => <Value>(value: Value) => boolean;
+};
 
 export const compileWorkflowActor = <
   const Name extends string,
