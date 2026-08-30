@@ -228,4 +228,15 @@ describe("Actor.fromWorkflow — production layer", () => {
       expect(result).toBe("hello captured");
     }),
   );
+
+  it.scopedLive("reuses the layer-owned workflow client reference", () =>
+    Effect.gen(function* () {
+      const context = yield* Layer.build(ProductionLayer);
+      const client = Context.get(context, Greeter.Context);
+      const first = yield* client("first");
+      const second = yield* client("second");
+
+      expect(first).toBe(second);
+    }),
+  );
 });

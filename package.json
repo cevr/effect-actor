@@ -36,7 +36,9 @@
     "gate:test": "\"$npm_execpath\" test --tsconfig-override=tsconfig.json",
     "gate:build": "\"$npm_execpath\" --bun tsdown",
     "build": "\"$npm_execpath\" --bun tsdown",
+    "bench:actor": "bun scripts/benchmark-actor-messaging.ts",
     "bench:canonical-json": "bun scripts/benchmark-canonical-json.ts",
+    "bench:workflow": "bun scripts/benchmark-workflow-messaging.ts",
     "release": "\"$npm_execpath\" run build && changeset publish",
     "version": "changeset version",
     "prepare": "lefthook install && effect-tsgo patch"

@@ -538,18 +538,21 @@ const layerPassthrough = <ROut, E, RIn>(
 ): Layer.Layer<ROut | RIn, E, RIn> =>
   Layer.merge(Layer.effectContext(Effect.context<RIn>()), layer);
 
+const makeWorkflowClientLayer = (actor: WorkflowActor<any, any, any, any>) =>
+  Layer.effect(
+    actor.Context,
+    Effect.map(WorkflowEngine, (engine) => {
+      const ref = buildWorkflowActorRef(actor, engine);
+      return (_entityId: string) => Effect.succeed(ref);
+    }),
+  );
+
 export const workflowToLayer = (
   actor: WorkflowActor<any, any, any, any>,
   handler: Function,
 ): Layer.Layer<any, any, any> => {
   const handlerLayer = actor._meta.workflow.toLayer(wrapWorkflowHandler(actor, handler) as any);
-  const clientLayer = Layer.effect(
-    actor.Context,
-    Effect.map(
-      WorkflowEngine,
-      (engine) => (_entityId: string) => Effect.succeed(buildWorkflowActorRef(actor, engine)),
-    ),
-  );
+  const clientLayer = makeWorkflowClientLayer(actor);
   return layerPassthrough(Layer.merge(handlerLayer, clientLayer));
 };
 
@@ -558,12 +561,6 @@ export const workflowToTestLayer = (
   handler: Function,
 ): Layer.Layer<any, any, any> => {
   const handlerLayer = actor._meta.workflow.toLayer(wrapWorkflowHandler(actor, handler) as any);
-  const clientLayer = Layer.effect(
-    actor.Context,
-    Effect.map(
-      WorkflowEngine,
-      (engine) => (_entityId: string) => Effect.succeed(buildWorkflowActorRef(actor, engine)),
-    ),
-  );
+  const clientLayer = makeWorkflowClientLayer(actor);
   return Layer.provideMerge(Layer.merge(handlerLayer, clientLayer), workflowEngineLayerMemory);
 };
