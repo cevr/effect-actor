@@ -1,5 +1,11 @@
 # effect-encore
 
+## 0.28.1
+
+### Patch Changes
+
+- [#56](https://github.com/cevr/effect-encore/pull/56) [`52f8e7d`](https://github.com/cevr/effect-encore/commit/52f8e7d83a91d68189b250b14c3f166bfcb32898) Thanks [@cevr](https://github.com/cevr)! - Remove quadratic work from canonical JSON encoding. Reuse the immutable workflow client reference that each layer owns.
+
 ## 0.28.0
 
 ### Minor Changes
