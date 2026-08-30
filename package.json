@@ -36,6 +36,7 @@
     "gate:test": "\"$npm_execpath\" test --tsconfig-override=tsconfig.json",
     "gate:build": "\"$npm_execpath\" --bun tsdown",
     "build": "\"$npm_execpath\" --bun tsdown",
+    "bench:canonical-json": "bun scripts/benchmark-canonical-json.ts",
     "release": "\"$npm_execpath\" run build && changeset publish",
     "version": "changeset version",
     "prepare": "lefthook install && effect-tsgo patch"
