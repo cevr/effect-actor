@@ -41,11 +41,12 @@ it.scopedLive("arbitrates compensation decisions through the cluster engine", ()
       filter: (result) => result._tag === "Suspended",
     });
 
-    const results = yield* Effect.all(
+    const results = yield* Effect.forEach(
       [
         ClusterCompensation.compensation.decidePending(executionId, "Retry"),
         ClusterCompensation.compensation.decidePending(executionId, "Stop"),
-      ].map(Effect.result),
+      ],
+      Effect.result,
       { concurrency: 2 },
     ).pipe(Effect.timeout("5 seconds"));
 
