@@ -1675,7 +1675,7 @@ export const Actor = {
   CurrentAddress,
   registerState: registerState as <A, Error = never, Requirements = never>(
     state: State.ReadableState<A, Error, Requirements>,
-  ) => Effect.Effect<void, never, ActorStateRegistry | CurrentAddress | Scope.Scope>,
+  ) => Effect.Effect<void, never, ActorStateRegistry | CurrentAddress | Scope.Scope | Requirements>,
   entityIdCodec,
   State,
   Client,

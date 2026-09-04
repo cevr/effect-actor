@@ -38,7 +38,6 @@ import { dual } from "effect/Function";
 import type { Inspectable as InspectableInterface } from "effect/Inspectable";
 
 const TypeId = "effect-encore/state/State";
-const ReadableTypeId = "effect-encore/state/ReadableState";
 const Read = Symbol.for("effect-encore/state/State/read");
 const Write = Symbol.for("effect-encore/state/State/write");
 const Changes = Symbol.for("effect-encore/state/State/changes");
@@ -54,12 +53,12 @@ const Lock = Symbol.for("effect-encore/state/State/lock");
  * - `R` — the read/write closures' service requirements
  */
 export interface ReadableState<A, E = never, R = never>
-  extends Variance<A, E, R>, Pipeable.Pipeable, InspectableInterface {
+  extends Pipeable.Pipeable, InspectableInterface {
   readonly [Read]: Effect.Effect<A, E, R>;
   readonly [Changes]: Stream.Stream<A, E, R>;
 }
 
-export interface State<A, E = never, R = never> extends ReadableState<A, E, R> {
+export interface State<A, E = never, R = never> extends ReadableState<A, E, R>, Variance<A, E, R> {
   readonly [Write]: (value: A) => Effect.Effect<void, E, R>;
   readonly [ChangesPubSub]: PubSub.PubSub<A>;
   readonly [Lock]: Semaphore.Semaphore;
@@ -67,10 +66,6 @@ export interface State<A, E = never, R = never> extends ReadableState<A, E, R> {
 
 export const isState = <Input>(value: Input): value is Input & State<unknown, unknown> =>
   Predicate.hasProperty(value, TypeId);
-
-export const isReadableState = <Input>(
-  value: Input,
-): value is Input & ReadableState<unknown, unknown> => Predicate.hasProperty(value, ReadableTypeId);
 
 export interface Variance<A, E, R> {
   readonly [TypeId]: {
@@ -84,7 +79,6 @@ const Proto = {
   ...Pipeable.Prototype,
   ...Inspectable.BaseProto,
   [TypeId]: { _A: identity, _E: identity, _R: identity },
-  [ReadableTypeId]: { _A: identity, _E: identity, _R: identity },
   toJSON(this: State<unknown, unknown, unknown>) {
     return { _id: "State" };
   },
@@ -93,7 +87,6 @@ const Proto = {
 const ReadableProto = {
   ...Pipeable.Prototype,
   ...Inspectable.BaseProto,
-  [ReadableTypeId]: { _A: identity, _E: identity, _R: identity },
   toJSON(this: ReadableState<unknown, unknown, unknown>) {
     return { _id: "ReadableState" };
   },

@@ -18,23 +18,23 @@ export class ActorStateUnavailable extends Data.TaggedError(
  * exported — the package barrel surfaces `State<A>` (see `index.ts`), not this
  * handle.
  */
-interface ActorStateHandle<StateValue, Error = never, Requirements = never> {
-  readonly get: Effect.Effect<StateValue, Error, Requirements>;
-  readonly watch: Stream.Stream<StateValue, Error, Requirements>;
+interface ActorStateHandle<StateValue, Error = never> {
+  readonly get: Effect.Effect<StateValue, Error>;
+  readonly watch: Stream.Stream<StateValue, Error>;
 }
 
-type AnyActorStateHandle = ActorStateHandle<unknown, unknown, unknown>;
+type AnyActorStateHandle = ActorStateHandle<unknown, unknown>;
 
-function eraseActorStateHandle<StateValue, Error, Requirements>(
-  handle: ActorStateHandle<StateValue, Error, Requirements>,
+function eraseActorStateHandle<StateValue, Error>(
+  handle: ActorStateHandle<StateValue, Error>,
 ): AnyActorStateHandle;
 function eraseActorStateHandle(handle: AnyActorStateHandle): AnyActorStateHandle {
   return handle;
 }
 
-function restoreActorStateHandle<StateValue, Error, Requirements>(
+function restoreActorStateHandle<StateValue, Error>(
   handle: AnyActorStateHandle,
-): ActorStateHandle<StateValue, Error, Requirements>;
+): ActorStateHandle<StateValue, Error>;
 function restoreActorStateHandle(handle: AnyActorStateHandle): AnyActorStateHandle {
   return handle;
 }
@@ -110,37 +110,38 @@ export class ActorStateRegistry extends Context.Service<
 
 export const registerState = <A, Error = never, Requirements = never>(
   state: State.ReadableState<A, Error, Requirements>,
-): Effect.Effect<void, never, ActorStateRegistry | CurrentAddress | Scope.Scope> =>
+): Effect.Effect<void, never, ActorStateRegistry | CurrentAddress | Scope.Scope | Requirements> =>
   Effect.gen(function* () {
     const registry = yield* ActorStateRegistry;
     const address = yield* CurrentAddress;
+    const context = yield* Effect.context<Requirements>();
     const handle = {
-      get: State.get(state),
-      watch: State.changes(state),
-    } satisfies ActorStateHandle<A, Error, Requirements>;
+      get: Effect.provideContext(State.get(state), context),
+      watch: Stream.provideContext(State.changes(state), context),
+    } satisfies ActorStateHandle<A, Error>;
     const erased = eraseActorStateHandle(handle);
     yield* registry.register(address, erased);
     yield* Effect.addFinalizer(() => registry.deregister(address, erased));
   });
 
-export const stateOf = <State, Error = never, Requirements = never>(
+export const stateOf = <State, Error = never>(
   address: EntityAddress.EntityAddress,
-): Effect.Effect<State, Error | ActorStateUnavailable, ActorStateRegistry | Requirements> =>
+): Effect.Effect<State, Error | ActorStateUnavailable, ActorStateRegistry> =>
   Effect.gen(function* () {
     const registry = yield* ActorStateRegistry;
     const erased = yield* registry.get(address);
-    const handle = restoreActorStateHandle<State, Error, Requirements>(erased);
+    const handle = restoreActorStateHandle<State, Error>(erased);
     return yield* handle.get;
   });
 
-export const watchStateOf = <State, Error = never, Requirements = never>(
+export const watchStateOf = <State, Error = never>(
   address: EntityAddress.EntityAddress,
-): Stream.Stream<State, Error | ActorStateUnavailable, ActorStateRegistry | Requirements> =>
+): Stream.Stream<State, Error | ActorStateUnavailable, ActorStateRegistry> =>
   Stream.unwrap(
     Effect.gen(function* () {
       const registry = yield* ActorStateRegistry;
       const erased = yield* registry.get(address);
-      const handle = restoreActorStateHandle<State, Error, Requirements>(erased);
+      const handle = restoreActorStateHandle<State, Error>(erased);
       return handle.watch;
     }),
   );
@@ -153,11 +154,11 @@ export const listStateEntityIds = (
     return yield* registry.list(entityType);
   });
 
-export const waitForStateOf = <State, Error = never, Requirements = never>(
+export const waitForStateOf = <State, Error = never>(
   address: EntityAddress.EntityAddress,
   predicate: (state: State) => boolean,
-): Effect.Effect<State, Error | ActorStateUnavailable, ActorStateRegistry | Requirements> =>
-  watchStateOf<State, Error, Requirements>(address).pipe(
+): Effect.Effect<State, Error | ActorStateUnavailable, ActorStateRegistry> =>
+  watchStateOf<State, Error>(address).pipe(
     Stream.filter(predicate),
     Stream.runHead,
     Effect.flatMap((option) =>
@@ -191,7 +192,7 @@ export const makeActorStateObservation = <Input, State, Error, Requirements>(opt
   readonly decodeFailure: (cause: unknown) => Effect.Effect<never, Error, Requirements>;
 }): ActorStateObservation<State, Error, Requirements> => {
   const watch = (address: EntityAddress.EntityAddress) =>
-    watchStateOf<Input, Error, Requirements>(address).pipe(
+    watchStateOf<Input, Error>(address).pipe(
       Stream.catch((cause: Error | ActorStateUnavailable) =>
         Stream.fromEffect(options.decodeFailure(cause)),
       ),
@@ -200,7 +201,7 @@ export const makeActorStateObservation = <Input, State, Error, Requirements>(opt
 
   return {
     get: (address) =>
-      stateOf<Input, Error, Requirements>(address).pipe(
+      stateOf<Input, Error>(address).pipe(
         Effect.catch(options.decodeFailure),
         Effect.flatMap(options.decodeState),
       ),

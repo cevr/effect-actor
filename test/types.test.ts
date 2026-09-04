@@ -1,5 +1,5 @@
 import { describe, test } from "effect-bun-test";
-import { Effect, Schema, Stream } from "effect";
+import { Context, Effect, Schema, Stream } from "effect";
 import type { Cause, Duration, Layer, Scope } from "effect";
 import type {
   AlreadyProcessingMessage,
@@ -32,6 +32,12 @@ class OrderError extends Schema.TaggedError<OrderError>()("OrderError", {
 class ForeignError extends Schema.TaggedError<ForeignError>()("ForeignError", {
   message: Schema.String,
 }) {}
+
+class StateRequirement extends Context.Service<StateRequirement, { readonly value: number }>()(
+  "effect-encore/test/types.test/StateRequirement",
+) {}
+
+type EffectRequirements<T> = T extends Effect.Effect<unknown, unknown, infer R> ? R : never;
 
 const Order = Actor.fromEntity("Order", {
   Place: {
@@ -293,6 +299,17 @@ describe("type-level tests", () => {
       yield* Actor.registerState(state);
     });
     void _check;
+  });
+
+  test("registerState keeps readable state requirements at registration", () => {
+    const read = Effect.map(StateRequirement, (service) => service.value);
+    const registration = Actor.registerState(
+      Actor.State.makeReadable(read, Stream.fromEffect(read)),
+    );
+    const _keepsRequirement: StateRequirement extends EffectRequirements<typeof registration>
+      ? true
+      : false = true;
+    void _keepsRequirement;
   });
 
   test("registerState rejects the legacy {get, watch} handle", () => {
