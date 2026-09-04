@@ -18,6 +18,23 @@ const makeCounter = (initial: number) =>
   });
 
 describe("State", () => {
+  it.scopedLive("makeReadable follows changes from an external state owner", () =>
+    Effect.gen(function* () {
+      const ref = yield* SubscriptionRef.make(0);
+      const state = State.makeReadable(SubscriptionRef.get(ref), SubscriptionRef.changes(ref));
+      const collected = yield* State.changes(state).pipe(
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkScoped,
+      );
+      yield* Effect.sleep("20 millis");
+      yield* SubscriptionRef.set(ref, 1);
+
+      expect(yield* State.get(state)).toBe(1);
+      expect(Array.from(yield* Fiber.join(collected))).toEqual([0, 1]);
+    }),
+  );
+
   it.effect("get reads the current value", () =>
     Effect.gen(function* () {
       const { state } = yield* makeCounter(7);

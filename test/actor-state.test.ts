@@ -1,5 +1,5 @@
 import { describe, expect, it } from "effect-bun-test";
-import { Effect, Fiber, Layer, Schema, Stream, SubscriptionRef } from "effect";
+import { Context, Effect, Fiber, Layer, Schema, Stream, SubscriptionRef } from "effect";
 import { ShardingConfig } from "effect/unstable/cluster";
 import { Actor } from "../src/index.js";
 
@@ -26,13 +26,14 @@ const StatefulLayer = Layer.provide(
     Stateful,
     Effect.gen(function* () {
       const ref = yield* SubscriptionRef.make(0);
-      const state = yield* Actor.State.make(SubscriptionRef.get(ref), (value) =>
-        SubscriptionRef.set(ref, value),
+      const state = Actor.State.makeReadable(
+        SubscriptionRef.get(ref),
+        SubscriptionRef.changes(ref),
       );
       yield* Actor.registerState(state);
       return Stateful.of({
         Increment: ({ operation }) =>
-          Actor.State.updateAndGet(state, (current) => current + operation.amount),
+          SubscriptionRef.updateAndGet(ref, (current) => current + operation.amount),
       });
     }),
   ),
@@ -40,6 +41,38 @@ const StatefulLayer = Layer.provide(
 );
 
 const test = it.scopedLive.layer(StatefulLayer);
+
+class StateSource extends Context.Service<StateSource, { readonly value: number }>()(
+  "effect-encore/test/actor-state.test/StateSource",
+) {}
+
+const Contextual = Actor.fromEntity(
+  "ContextualState",
+  {
+    Read: {
+      payload: { id: Schema.String },
+      success: Schema.Finite,
+      id: (payload: { id: string }) => payload.id,
+    },
+  },
+  { state: { schema: Schema.Finite } },
+);
+
+const contextualRead = Effect.map(StateSource, (source) => source.value);
+const ContextualLayer = Actor.toTestLayer(
+  Contextual,
+  Effect.gen(function* () {
+    yield* Actor.registerState(
+      Actor.State.makeReadable(contextualRead, Stream.fromEffect(contextualRead)),
+    );
+    return Contextual.of({ Read: () => contextualRead });
+  }),
+).pipe(
+  Layer.provide(Layer.succeed(StateSource, StateSource.of({ value: 42 }))),
+  Layer.provide(TestShardingConfig),
+);
+
+const contextualTest = it.scopedLive.layer(ContextualLayer);
 
 const Coerced = Actor.fromEntity(
   "Coerced",
@@ -74,6 +107,17 @@ const CoercedLayer = Layer.provide(
 const coercedTest = it.scopedLive.layer(CoercedLayer);
 
 describe("Actor state protocol", () => {
+  contextualTest("captures readable state requirements when the actor registers", () =>
+    Effect.gen(function* () {
+      expect(yield* Contextual.getState("contextual")).toBe(42);
+      expect(
+        Array.from(
+          yield* Contextual.watchState("contextual").pipe(Stream.take(1), Stream.runCollect),
+        ),
+      ).toEqual([42]);
+    }),
+  );
+
   test("cold getState materializes an entity before reading registered state", () =>
     Effect.gen(function* () {
       const value = yield* Stateful.getState("cold-counter");

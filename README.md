@@ -143,15 +143,20 @@ const OrderLive = Actor.toLayer(
 ### Entity State
 
 Long-lived entity handlers can expose live, in-memory state without a
-side-channel registry in the host app. Build a `State<A>` value over the backing
-cell, register it from the entity scope, and mutate through it; clients read or
-watch it through the actor, keyed by the same `entityId` used for operations.
+side-channel registry in the host app. Build a writable `State<A>` or a
+`ReadableState<A>` view over the backing owner. Register it from the entity
+scope. Clients read or watch it through the actor. They use the same `entityId`
+as operations.
 
 `State<A>` is a typed view over the cell plus a subscribable change stream:
 `State.get` / `State.set` / `State.update` / `State.updateAndGet` / `State.modify`
 serialize their read/apply/write/publish through a per-`State` lock, and
 `State.changes` is a replay-1 stream of every committed write. The state value is
 opaque. Use these functions instead of its internal closures or synchronization.
+
+Use `State.makeReadable(read, changes)` when another service owns mutation. This
+constructor does not copy the state. It preserves the source read and change
+stream, including their error and requirement channels.
 
 ```ts
 const CounterLive = Actor.toLayer(

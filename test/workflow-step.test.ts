@@ -533,11 +533,12 @@ describe("step.run — durable compensation", () => {
         filter: (result) => result._tag === "Suspended",
       });
 
-      const results = yield* Effect.all(
+      const results = yield* Effect.forEach(
         [
           DurableCompensation.compensation.decidePending(executionId, "Retry"),
           DurableCompensation.compensation.decidePending(executionId, "Stop"),
-        ].map(Effect.result),
+        ],
+        Effect.result,
         { concurrency: 2 },
       );
       expect(results.filter(Result.isSuccess)).toHaveLength(1);

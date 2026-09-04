@@ -176,10 +176,11 @@ describe("Client.layer.fromSharding", () => {
 
       // Poll until the consumer has driven the reply terminal.
       const terminal = yield* Effect.retry(
-        Effect.flatMap(client.peek(processEntity, "e2e\x00Process\x00e2e", processDefs), (r) => {
-          if (r._tag === "Success") return Effect.succeed(r);
-          return Effect.fail("pending");
-        }),
+        Effect.filterOrFail(
+          client.peek(processEntity, "e2e\x00Process\x00e2e", processDefs),
+          (result) => result._tag === "Success",
+          () => "pending",
+        ),
         { times: 50 },
       );
       expect(terminal._tag).toBe("Success");
@@ -198,10 +199,11 @@ describe("Client.layer.fromSharding", () => {
       const client = yield* Client;
       yield* client.send(failInvocation("nope"));
       const terminal = yield* Effect.retry(
-        Effect.flatMap(client.peek(processEntity, "nope\x00Fail\x00nope", processDefs), (r) => {
-          if (r._tag === "Failure") return Effect.succeed(r);
-          return Effect.fail("pending");
-        }),
+        Effect.filterOrFail(
+          client.peek(processEntity, "nope\x00Fail\x00nope", processDefs),
+          (result) => result._tag === "Failure",
+          () => "pending",
+        ),
         { times: 50 },
       );
       expect(terminal._tag).toBe("Failure");

@@ -1674,8 +1674,8 @@ const isWorkflow = (actor: AnyActor): actor is AnyWorkflowActor => actor._tag ==
 export const Actor = {
   CurrentAddress,
   registerState: registerState as <A, Error = never, Requirements = never>(
-    state: State.State<A, Error, Requirements>,
-  ) => Effect.Effect<void, never, ActorStateRegistry | CurrentAddress | Scope.Scope>,
+    state: State.ReadableState<A, Error, Requirements>,
+  ) => Effect.Effect<void, never, ActorStateRegistry | CurrentAddress | Scope.Scope | Requirements>,
   entityIdCodec,
   State,
   Client,
