@@ -109,7 +109,7 @@ export class ActorStateRegistry extends Context.Service<
 }
 
 export const registerState = <A, Error = never, Requirements = never>(
-  state: State.State<A, Error, Requirements>,
+  state: State.ReadableState<A, Error, Requirements>,
 ): Effect.Effect<void, never, ActorStateRegistry | CurrentAddress | Scope.Scope> =>
   Effect.gen(function* () {
     const registry = yield* ActorStateRegistry;

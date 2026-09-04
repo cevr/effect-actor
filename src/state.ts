@@ -38,9 +38,11 @@ import { dual } from "effect/Function";
 import type { Inspectable as InspectableInterface } from "effect/Inspectable";
 
 const TypeId = "effect-encore/state/State";
+const ReadableTypeId = "effect-encore/state/ReadableState";
 const Read = Symbol.for("effect-encore/state/State/read");
 const Write = Symbol.for("effect-encore/state/State/write");
 const Changes = Symbol.for("effect-encore/state/State/changes");
+const ChangesPubSub = Symbol.for("effect-encore/state/State/changesPubSub");
 const Lock = Symbol.for("effect-encore/state/State/lock");
 
 /**
@@ -51,16 +53,24 @@ const Lock = Symbol.for("effect-encore/state/State/lock");
  *         `SchemaError` when read/write decode/encode against a schema)
  * - `R` — the read/write closures' service requirements
  */
-export interface State<A, E = never, R = never>
+export interface ReadableState<A, E = never, R = never>
   extends Variance<A, E, R>, Pipeable.Pipeable, InspectableInterface {
   readonly [Read]: Effect.Effect<A, E, R>;
+  readonly [Changes]: Stream.Stream<A, E, R>;
+}
+
+export interface State<A, E = never, R = never> extends ReadableState<A, E, R> {
   readonly [Write]: (value: A) => Effect.Effect<void, E, R>;
-  readonly [Changes]: PubSub.PubSub<A>;
+  readonly [ChangesPubSub]: PubSub.PubSub<A>;
   readonly [Lock]: Semaphore.Semaphore;
 }
 
 export const isState = <Input>(value: Input): value is Input & State<unknown, unknown> =>
   Predicate.hasProperty(value, TypeId);
+
+export const isReadableState = <Input>(
+  value: Input,
+): value is Input & ReadableState<unknown, unknown> => Predicate.hasProperty(value, ReadableTypeId);
 
 export interface Variance<A, E, R> {
   readonly [TypeId]: {
@@ -74,8 +84,18 @@ const Proto = {
   ...Pipeable.Prototype,
   ...Inspectable.BaseProto,
   [TypeId]: { _A: identity, _E: identity, _R: identity },
+  [ReadableTypeId]: { _A: identity, _E: identity, _R: identity },
   toJSON(this: State<unknown, unknown, unknown>) {
     return { _id: "State" };
+  },
+};
+
+const ReadableProto = {
+  ...Pipeable.Prototype,
+  ...Inspectable.BaseProto,
+  [ReadableTypeId]: { _A: identity, _E: identity, _R: identity },
+  toJSON(this: ReadableState<unknown, unknown, unknown>) {
+    return { _id: "ReadableState" };
   },
 };
 
@@ -83,6 +103,30 @@ function makeStateObject<A, E, R>(): State<A, E, R>;
 function makeStateObject(): object {
   return Object.create(Proto);
 }
+
+function makeReadableStateObject<A, E, R>(): ReadableState<A, E, R>;
+function makeReadableStateObject(): object {
+  return Object.create(ReadableProto);
+}
+
+/**
+ * Creates a read-only state view over an existing source of truth.
+ *
+ * The constructor does not read or copy the current value. It preserves the
+ * supplied read and change stream, including their error and requirement
+ * channels. Use it when another service owns state mutation.
+ */
+export const makeReadable = <A, E, R>(
+  read: Effect.Effect<A, E, R>,
+  changes: Stream.Stream<A, E, R>,
+): ReadableState<A, E, R> => {
+  const self = makeReadableStateObject<A, E, R>();
+  Object.assign(self, {
+    [Read]: read,
+    [Changes]: changes,
+  });
+  return self;
+};
 
 /**
  * Creates a `State` from `read` and `write` closures over the
@@ -106,7 +150,8 @@ export const make = Effect.fnUntraced(function* <A, E, R>(
   Object.assign(self, {
     [Read]: read,
     [Write]: write,
-    [Changes]: pubsub,
+    [Changes]: Stream.fromPubSub(pubsub),
+    [ChangesPubSub]: pubsub,
     [Lock]: Semaphore.makeUnsafe(1),
   });
   return self;
@@ -115,7 +160,7 @@ export const make = Effect.fnUntraced(function* <A, E, R>(
 /**
  * Reads the current value.
  */
-export const get = <A, E, R>(self: State<A, E, R>): Effect.Effect<A, E, R> => self[Read];
+export const get = <A, E, R>(self: ReadableState<A, E, R>): Effect.Effect<A, E, R> => self[Read];
 
 /**
  * Replaces the value, then publishes it to {@link changes}. Serialized
@@ -193,8 +238,8 @@ export const modify: {
  * immediately see the most recent value (replay = 1), then every
  * subsequent publish.
  */
-export const changes = <A, E, R>(self: State<A, E, R>): Stream.Stream<A> =>
-  Stream.fromPubSub(self[Changes]);
+export const changes = <A, E, R>(self: ReadableState<A, E, R>): Stream.Stream<A, E, R> =>
+  self[Changes];
 
 /**
  * Publish a value to the change stream as an `Effect`. Does not write
@@ -220,7 +265,7 @@ export const publish: {
  * not acquire the semaphore — callers are responsible for ordering.
  */
 export const publishUnsafe = <A, E, R>(self: State<A, E, R>, value: A): boolean =>
-  PubSub.publishUnsafe(self[Changes], value);
+  PubSub.publishUnsafe(self[ChangesPubSub], value);
 
 /**
  * Publishes to the change stream WITHOUT acquiring the semaphore.
@@ -230,7 +275,7 @@ export const publishUnsafe = <A, E, R>(self: State<A, E, R>, value: A): boolean 
  * with the write order.
  */
 const publishDirect = <A, E, R>(self: State<A, E, R>, value: A): Effect.Effect<boolean> =>
-  PubSub.publish(self[Changes], value);
+  PubSub.publish(self[ChangesPubSub], value);
 
 /**
  * Writes the value to the backing store and, on success, publishes it

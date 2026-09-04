@@ -26,13 +26,14 @@ const StatefulLayer = Layer.provide(
     Stateful,
     Effect.gen(function* () {
       const ref = yield* SubscriptionRef.make(0);
-      const state = yield* Actor.State.make(SubscriptionRef.get(ref), (value) =>
-        SubscriptionRef.set(ref, value),
+      const state = Actor.State.makeReadable(
+        SubscriptionRef.get(ref),
+        SubscriptionRef.changes(ref),
       );
       yield* Actor.registerState(state);
       return Stateful.of({
         Increment: ({ operation }) =>
-          Actor.State.updateAndGet(state, (current) => current + operation.amount),
+          SubscriptionRef.updateAndGet(ref, (current) => current + operation.amount),
       });
     }),
   ),

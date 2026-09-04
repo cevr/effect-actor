@@ -1,6 +1,6 @@
 import { describe, test } from "effect-bun-test";
-import { Effect, Schema } from "effect";
-import type { Cause, Duration, Layer, Scope, Stream } from "effect";
+import { Effect, Schema, Stream } from "effect";
+import type { Cause, Duration, Layer, Scope } from "effect";
 import type {
   AlreadyProcessingMessage,
   EntityNotAssignedToRunner,
@@ -283,6 +283,14 @@ describe("type-level tests", () => {
       );
       yield* Actor.registerState(state);
       yield* Actor.State.updateAndGet(state, (n) => n + 1);
+    });
+    void _check;
+  });
+
+  test("registerState consumes a ReadableState<A> owned by another service", () => {
+    const _check = Effect.gen(function* () {
+      const state = Actor.State.makeReadable(Effect.succeed(0), Stream.make(0));
+      yield* Actor.registerState(state);
     });
     void _check;
   });
