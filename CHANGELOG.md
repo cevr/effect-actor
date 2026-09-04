@@ -1,5 +1,11 @@
 # effect-encore
 
+## 0.29.0
+
+### Minor Changes
+
+- [#58](https://github.com/cevr/effect-encore/pull/58) [`2ce0d10`](https://github.com/cevr/effect-encore/commit/2ce0d1024b95f9413f4ce165fbcccb9c9134205b) Thanks [@cevr](https://github.com/cevr)! - Add the `ReadableState` type and `State.makeReadable` constructor for actor state that another service owns. Widen `Actor.registerState` to accept the read-only view and capture its service context at registration.
+
 ## 0.28.1
 
 ### Patch Changes
