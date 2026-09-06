@@ -1,5 +1,11 @@
 # effect-encore
 
+## 0.29.1
+
+### Patch Changes
+
+- [#60](https://github.com/cevr/effect-encore/pull/60) [`c02c40f`](https://github.com/cevr/effect-encore/commit/c02c40fda913ae2b5998b2103ccff37323294122) Thanks [@cevr](https://github.com/cevr)! - Attach operation primary keys to schema-backed payloads without discarding their codecs.
+
 ## 0.29.0
 
 ### Minor Changes
