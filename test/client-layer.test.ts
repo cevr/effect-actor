@@ -21,9 +21,12 @@ import { describe, expect, it } from "effect-bun-test";
 import { Cause, Context, Effect, Exit, Layer, Option, Ref, Schema } from "effect";
 import type { Entity as ClusterEntity } from "effect/unstable/cluster";
 import { Entity, MessageStorage, ShardingConfig, TestRunner } from "effect/unstable/cluster";
+import { SqlClient } from "effect/unstable/sql";
+import { BunCrypto } from "@effect/platform-bun";
+import { SqliteClient } from "@effect/sql-sqlite-bun";
 import type { ActorMailboxService } from "../src/actor-mailbox.js";
 import { ActorMailbox, MailboxError } from "../src/actor-mailbox.js";
-import { Actor, Client, ClientLayer } from "../src/index.js";
+import { Actor, Client, ClientLayer, fromSqlClient } from "../src/index.js";
 import { makeTestMailboxImpl } from "../src/client.js";
 import { compileInvocation } from "../src/internal/invocation-compiler.js";
 
@@ -46,6 +49,21 @@ const ClientActor = Actor.fromEntity("ClientLayerActor", {
   },
 });
 
+const SchemaPayloadClientActor = Actor.fromEntity("SchemaPayloadClientLayerActor", {
+  Process: {
+    payload: Schema.Struct({ input: Schema.String }),
+    success: Schema.String,
+    persisted: true,
+    id: (p: { input: string }) => p.input,
+  },
+  Scalar: {
+    payload: Schema.String,
+    success: Schema.String,
+    persisted: true,
+    id: (p: string) => p,
+  },
+});
+
 // A live-only (non-persisted) op to exercise the persisted gate.
 const LiveOnlyActor = Actor.fromEntity("ClientLayerLiveOnly", {
   Ping: {
@@ -63,9 +81,17 @@ const processEntity = ClientActor._meta.entity as ClusterEntity.Entity<string, a
 // eslint-disable-next-line typescript-eslint/no-explicit-any
 // oxlint-disable-next-line effect/noAs -- the Client transport seam erases the invariant entity name and RPC union
 const liveOnlyEntity = LiveOnlyActor._meta.entity as ClusterEntity.Entity<string, any>;
+// eslint-disable-next-line typescript-eslint/no-explicit-any -- entity name param is invariant
+// oxlint-disable-next-line effect/noAs -- the Client transport seam erases the invariant entity name and RPC union
+const schemaPayloadEntity = SchemaPayloadClientActor._meta.entity as ClusterEntity.Entity<
+  string,
+  any
+>;
 
 const processDefs = ClientActor._meta.internalDefinitions ?? ClientActor._meta.definitions;
 const liveOnlyDefs = LiveOnlyActor._meta.internalDefinitions ?? LiveOnlyActor._meta.definitions;
+const schemaPayloadDefs =
+  SchemaPayloadClientActor._meta.internalDefinitions ?? SchemaPayloadClientActor._meta.definitions;
 
 const processInvocation = (input: string) =>
   compileInvocation(processEntity, "Process", processDefs["Process"], { input });
@@ -73,6 +99,10 @@ const failInvocation = (input: string) =>
   compileInvocation(processEntity, "Fail", processDefs["Fail"], { input });
 const pingInvocation = (input: string) =>
   compileInvocation(liveOnlyEntity, "Ping", liveOnlyDefs["Ping"], { input });
+const schemaPayloadInvocation = (input: string) =>
+  compileInvocation(schemaPayloadEntity, "Process", schemaPayloadDefs["Process"], { input });
+const scalarPayloadInvocation = (input: string) =>
+  compileInvocation(schemaPayloadEntity, "Scalar", schemaPayloadDefs["Scalar"], input);
 
 // ── Client.layer.memory — self-contained producer (no consumer) ────────────
 
@@ -129,6 +159,15 @@ const FromConfigStorage = MessageStorage.layerMemory.pipe(
   Layer.provideMerge(ShardingConfig.layer()),
 );
 
+const SqlStorage = fromSqlClient().pipe(
+  Layer.provideMerge(SqliteClient.layer({ filename: ":memory:" })),
+  Layer.provide(BunCrypto.layer),
+);
+const SqlClientLayer = ClientLayer.fromConfig.pipe(
+  Layer.provideMerge(SqlStorage),
+  Layer.provideMerge(ShardingConfig.layer()),
+);
+
 describe("Client.layer.fromConfig", () => {
   it.scopedLive("persisted send lands in the explicitly-provided storage", () =>
     Effect.gen(function* () {
@@ -139,6 +178,36 @@ describe("Client.layer.fromConfig", () => {
       const unprocessed = yield* storage.unprocessedMessages([address.shardId]);
       expect(unprocessed.length).toBeGreaterThan(0);
     }).pipe(Effect.provide(ClientLayer.fromConfig.pipe(Layer.provideMerge(FromConfigStorage)))),
+  );
+
+  it.scopedLive("public send deduplicates schema payloads in SQL storage", () =>
+    Effect.gen(function* () {
+      const client = yield* Client;
+      const sql = yield* SqlClient.SqlClient;
+      yield* client.send(schemaPayloadInvocation("sql-public-dup"));
+      yield* client.send(schemaPayloadInvocation("sql-public-dup"));
+      yield* client.send(scalarPayloadInvocation("sql-scalar-dup"));
+      yield* client.send(scalarPayloadInvocation("sql-scalar-dup"));
+
+      const rows = yield* sql<{ readonly count: number | bigint }>`
+        SELECT COUNT(*) AS count
+        FROM cluster_messages
+        WHERE entity_type = ${schemaPayloadEntity.type}
+          AND entity_id = ${"sql-public-dup"}
+          AND tag = ${"Process"}
+      `;
+      const scalarRows = yield* sql<{ readonly count: number | bigint }>`
+        SELECT COUNT(*) AS count
+        FROM cluster_messages
+        WHERE entity_type = ${schemaPayloadEntity.type}
+          AND entity_id = ${"sql-scalar-dup"}
+          AND tag = ${"Scalar"}
+      `;
+      expect(rows).toHaveLength(1);
+      expect(String(rows[0]?.count)).toBe("1");
+      expect(scalarRows).toHaveLength(1);
+      expect(String(scalarRows[0]?.count)).toBe("1");
+    }).pipe(Effect.provide(SqlClientLayer)),
   );
 });
 
