@@ -1,5 +1,5 @@
 import type { DateTime, Schema as SchemaType } from "effect";
-import { Context, Effect, Option, Predicate, PrimaryKey, Schema } from "effect";
+import { Context, Effect, Option, Predicate, PrimaryKey, Schema, SchemaGetter } from "effect";
 import {
   ClusterSchema,
   type Entity as ClusterEntity,
@@ -68,6 +68,29 @@ interface OperationIdentityBase {
 export const isOpaquePayload = <Payload>(payload: Payload): boolean =>
   Schema.isSchema(payload) && !Predicate.hasProperty(payload, "fields");
 
+/* oxlint-disable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noNullish, effect/noRuntimeTypeof, effect/noTernary, effect/noUnknownParameters, effect/noUnsafeDictionaryType -- Effect Cluster erases schema-specific RPC types at this compiler seam. */
+
+const OpaquePayloadValue = Symbol("effect-encore/OpaquePayloadValue");
+
+export const unwrapOpaquePayload = (input: unknown): unknown => {
+  if (Predicate.hasProperty(input, OpaquePayloadValue)) {
+    const getter = input[OpaquePayloadValue];
+    if (typeof getter === "function") return Reflect.apply(getter, input, []);
+  }
+  return input;
+};
+
+const unwrapOpaquePayloadForEncoding = (input: unknown): unknown => {
+  const unwrapped = unwrapOpaquePayload(input);
+  if (unwrapped !== input) return unwrapped;
+  // Schema encoding validates the target class before it invokes the
+  // transformation. That validation can produce a plain object, so retain a
+  // structural fallback for the encode-side value.
+  return Predicate.isObject(input) && Predicate.hasProperty(input, "value")
+    ? input["value"]
+    : input;
+};
+
 export const resolveId = <Payload>(
   definition: OperationDef | void,
   payload: Payload,
@@ -105,7 +128,7 @@ export const payloadFromOperation = (
     isOpaquePayload(payloadSchema.value) &&
     Predicate.hasProperty(operation, "_payload")
   ) {
-    return operation["_payload"];
+    return unwrapOpaquePayload(operation["_payload"]);
   }
   return operation;
 };
@@ -133,43 +156,123 @@ export const compileInvocation = <Payload>(
   };
 };
 
-/* oxlint-disable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noUnknownParameters, effect/noUnsafeDictionaryType -- Effect Cluster erases schema-specific RPC types at this compiler seam. */
+type PayloadClassBase = new (...args: ReadonlyArray<unknown>) => object;
+
+const makePayloadClass = (
+  base: Schema.Top,
+  primaryKeyOf: (input: unknown) => string,
+  deliverAt: ((input: unknown) => DateTime.DateTime) | undefined,
+  attachPrimaryKey: boolean,
+  opaque: boolean = false,
+): Schema.Top => {
+  class PayloadClass extends (base as unknown as PayloadClassBase) {}
+  const proto = PayloadClass.prototype as Record<string | symbol, unknown>;
+  if (opaque) {
+    proto[OpaquePayloadValue] = function (this: Record<string, unknown>) {
+      return this["value"];
+    };
+  }
+  if (attachPrimaryKey) {
+    proto[PrimaryKey.symbol] = function (this: unknown) {
+      return primaryKeyOf(unwrapOpaquePayload(this));
+    };
+  }
+  if (deliverAt) {
+    proto[DeliverAt.symbol] = function (this: unknown) {
+      return deliverAt(unwrapOpaquePayload(this));
+    };
+  }
+  return PayloadClass as unknown as Schema.Top;
+};
+
+const makeOpaquePayloadSchema = (
+  actorName: string,
+  tag: string,
+  payload: Schema.Top,
+  primaryKeyOf: (input: unknown) => string,
+  deliverAt: ((input: unknown) => DateTime.DateTime) | undefined,
+): Schema.Top => {
+  const Base = Schema.Class<Record<string, unknown>>(`effect-encore/${actorName}/${tag}/Payload`)({
+    value: Schema.Unknown,
+  });
+  const payloadClass = makePayloadClass(Base, primaryKeyOf, deliverAt, true, true);
+  const wrapped = Schema.decodeTo(payloadClass, {
+    decode: SchemaGetter.transform((input) => payloadClass.make({ value: input })),
+    encode: SchemaGetter.transform((input) => unwrapOpaquePayloadForEncoding(input)),
+  })(payload);
+
+  // The public constructor accepts the decoded user payload. The transformed
+  // schema itself stores the internal carrier so Envelope.primaryKey can read
+  // the cluster protocol before the original codec encodes the wire value.
+  (wrapped as Schema.Top).make = (input, options) => payloadClass.make({ value: input }, options);
+  return wrapped;
+};
+
+const compileSchemaPayload = (
+  actorName: string,
+  tag: string,
+  payload: Schema.Top,
+  primaryKeyOf: (input: unknown) => string,
+  deliverAt: ((input: unknown) => DateTime.DateTime) | undefined,
+): Schema.Top => {
+  if (Predicate.hasProperty(payload, "fields")) {
+    const hasPrimaryKey =
+      Predicate.hasProperty(payload, "prototype") &&
+      Predicate.hasProperty(payload["prototype"], PrimaryKey.symbol);
+    const hasDeliverAt =
+      Predicate.hasProperty(payload, "prototype") &&
+      Predicate.hasProperty(payload["prototype"], DeliverAt.symbol);
+
+    if (hasPrimaryKey && (!deliverAt || hasDeliverAt)) return payload;
+
+    let base: Schema.Top;
+    let preserveSchema = false;
+    let payloadDeliverAt = deliverAt;
+    if (Predicate.hasProperty(payload, "identifier")) {
+      base = payload;
+    } else {
+      base = Schema.Class<Record<string, unknown>>(`effect-encore/${actorName}/${tag}/Payload`)(
+        payload["fields"] as Schema.Struct.Fields,
+      );
+      preserveSchema = true;
+    }
+    if (hasDeliverAt) payloadDeliverAt = undefined;
+    const payloadClass = makePayloadClass(base, primaryKeyOf, payloadDeliverAt, !hasPrimaryKey);
+    if (preserveSchema) return Schema.decodeTo(payloadClass)(payload);
+    return payloadClass;
+  }
+
+  // Opaque payloads (for example Schema.String) have no object prototype on
+  // on which the cluster protocol can be attached. This also covers
+  // transformed schemas whose decoded value is an object or class: the
+  // original decoded value stays inside the carrier and reaches user code
+  // unchanged after the transport unwraps it.
+  return makeOpaquePayloadSchema(actorName, tag, payload, primaryKeyOf, deliverAt);
+};
 
 export const compileRpc = (actorName: string, tag: string, def: OperationDef): Rpc.Any => {
   const options: Record<string, unknown> = {};
   const payload = def["payload"];
-  const deliverAt = def["deliverAt"];
+  const deliverAt = def["deliverAt"] as ((input: unknown) => DateTime.DateTime) | undefined;
   const primaryKeyOf = (input: unknown) => resolveId(def, input, tag).primaryKey;
 
   if (payload) {
     if (Schema.isSchema(payload)) {
-      options["payload"] = payload;
+      options["payload"] = compileSchemaPayload(actorName, tag, payload, primaryKeyOf, deliverAt);
     } else {
       const Base = Schema.Class<Record<string, unknown>>(
         `effect-encore/${actorName}/${tag}/Payload`,
       )(payload);
-      class PayloadClass extends Base {}
-      const proto = PayloadClass.prototype as Record<string | symbol, unknown>;
-      proto[PrimaryKey.symbol] = function (this: unknown) {
-        return primaryKeyOf(this);
-      };
-      if (deliverAt) {
-        proto[DeliverAt.symbol] = function (this: unknown) {
-          return (deliverAt as Function)(this) as DateTime.DateTime;
-        };
-      }
-      options["payload"] = PayloadClass;
+      const payloadClass = makePayloadClass(Base, primaryKeyOf, deliverAt, true);
+      options["payload"] = payloadClass;
     }
   } else {
     const Base = Schema.Class<Record<string, unknown>>(`effect-encore/${actorName}/${tag}/Payload`)(
       {},
     );
-    class EmptyPayloadClass extends Base {}
-    (EmptyPayloadClass.prototype as Record<string | symbol, unknown>)[PrimaryKey.symbol] =
-      function () {
-        return primaryKeyOf(Schema.Void.make());
-      };
-    options["payload"] = EmptyPayloadClass;
+    const emptyPrimaryKeyOf = (_input: unknown) => primaryKeyOf(Schema.Void.make());
+    const payloadClass = makePayloadClass(Base, emptyPrimaryKeyOf, undefined, true);
+    options["payload"] = payloadClass;
   }
 
   if (def["success"]) options["success"] = def["success"];
@@ -235,7 +338,7 @@ export const compileOutgoingRequest = (
     if (!definition.payload) {
       payload = payloadSchema.make({});
     } else if (isOpaquePayload(definition.payload)) {
-      payload = operation["_payload"];
+      payload = payloadSchema.make(operation["_payload"]);
     } else {
       const { _tag: operationTag, ...fields } = operation;
       void operationTag;
@@ -264,4 +367,4 @@ export const compileOutgoingRequest = (
     });
   });
 
-/* oxlint-enable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noUnknownParameters, effect/noUnsafeDictionaryType */
+/* oxlint-enable effect/noAs, effect/noChainedTypeAssertions, effect/noKnownValueWidening, effect/noNullish, effect/noRuntimeTypeof, effect/noTernary, effect/noUnknownParameters, effect/noUnsafeDictionaryType */

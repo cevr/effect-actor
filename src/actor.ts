@@ -58,6 +58,7 @@ import {
   makeOperationValue,
   payloadFromOperation,
   resolveId,
+  unwrapOpaquePayload,
 } from "./internal/invocation-compiler.js";
 import {
   waitFor as waitForExecution,
@@ -1492,7 +1493,7 @@ const transformHandlers = (
       transformed[tag] = (request: Record<string, unknown>) => {
         const raw = request["payload"];
         const buildOperation = (): Record<string, unknown> => {
-          if (opaque) return { _tag: tag, _payload: raw };
+          if (opaque) return { _tag: tag, _payload: unwrapOpaquePayload(raw) };
           return { _tag: tag, ...((raw ?? {}) as object) };
         };
         const operation = buildOperation();

@@ -14,8 +14,11 @@
  *    storage that a consumer's poll loop reads from, exercising the path that
  *    motivated this work.
  */
+import { SqliteClient } from "@effect/sql-sqlite-bun";
+import { BunCrypto } from "@effect/platform-bun";
 import { describe, expect, it } from "effect-bun-test";
 import { Cause, Context, Effect, Exit, Layer, Option, Schema } from "effect";
+import { SqlClient } from "effect/unstable/sql";
 import type { Entity as ClusterEntity } from "effect/unstable/cluster";
 import {
   EntityAddress,
@@ -32,13 +35,22 @@ import * as Headers from "effect/unstable/http/Headers";
 import type { Rpc } from "effect/unstable/rpc";
 import { ActorAddressResolver, ActorAddressResolverLayer } from "../src/actor-address-resolver.js";
 import { ActorMailbox, ActorMailboxLayer, MailboxError } from "../src/actor-mailbox.js";
-import { Actor } from "../src/index.js";
+import { Actor, fromSqlClient } from "../src/index.js";
 
 // Two actors: one persisted, one not. The persisted one round-trips through
 // fromConfig; the non-persisted one MUST be rejected.
 const PersistedActor = Actor.fromEntity("MailboxPersistedActor", {
   Place: {
     payload: { item: Schema.String },
+    success: Schema.String,
+    persisted: true,
+    id: (p: { item: string }) => p.item,
+  },
+});
+
+const SchemaPayloadActor = Actor.fromEntity("MailboxSchemaPayloadActor", {
+  Place: {
+    payload: Schema.Struct({ item: Schema.String }),
     success: Schema.String,
     persisted: true,
     id: (p: { item: string }) => p.item,
@@ -58,7 +70,7 @@ const LiveOnlyActor = Actor.fromEntity("MailboxLiveOnlyActor", {
 // internal `OperationHandle.send` plumbing. Mirrors the Invocation compiler
 // in actor.ts but inlined here for unit-test clarity.
 const buildRequest = (
-  actor: typeof PersistedActor | typeof LiveOnlyActor,
+  actor: typeof PersistedActor | typeof SchemaPayloadActor | typeof LiveOnlyActor,
   tag: string,
   payload: { readonly item: string } | { readonly input: string },
 ): Effect.Effect<Message.OutgoingRequest<Rpc.Any>, never, Snowflake.Generator> =>
@@ -113,6 +125,15 @@ const TestStack = ActorMailboxLayer.fromConfig.pipe(
   Layer.provideMerge(Snowflake.layerGenerator),
 );
 
+const SqlStorageLayer = fromSqlClient().pipe(
+  Layer.provideMerge(SqliteClient.layer({ filename: ":memory:" })),
+  Layer.provide(BunCrypto.layer),
+);
+const SqlTestStack = ActorMailboxLayer.fromConfig.pipe(
+  Layer.provideMerge(SqlStorageLayer),
+  Layer.provideMerge(Snowflake.layerGenerator),
+);
+
 describe("ActorMailboxLayer.fromConfig", () => {
   it.scopedLive("rejects non-persisted requests with MailboxError", () =>
     Effect.gen(function* () {
@@ -154,6 +175,41 @@ describe("ActorMailboxLayer.fromConfig", () => {
       const exit = yield* mailbox.send(b).pipe(Effect.exit);
       expect(Exit.isSuccess(exit)).toBe(true);
     }).pipe(Effect.provide(TestStack)),
+  );
+
+  it.scopedLive("deduplicates schema payloads using the operation identity", () =>
+    Effect.gen(function* () {
+      const mailbox = yield* ActorMailbox;
+      const a = yield* buildRequest(SchemaPayloadActor, "Place", { item: "schema-dup" });
+      const b = yield* buildRequest(SchemaPayloadActor, "Place", { item: "schema-dup" });
+      yield* mailbox.send(a);
+      const exit = yield* mailbox.send(b).pipe(Effect.exit);
+      expect(Exit.isSuccess(exit)).toBe(true);
+      const storage = yield* MessageStorage.MessageStorage;
+      const unprocessed = yield* storage.unprocessedMessages([a.envelope.address.shardId]);
+      expect(unprocessed).toHaveLength(1);
+    }).pipe(Effect.provide(TestStack)),
+  );
+
+  it.scopedLive("deduplicates schema payloads in SQL mailbox storage", () =>
+    Effect.gen(function* () {
+      const mailbox = yield* ActorMailbox;
+      const sql = yield* SqlClient.SqlClient;
+      const a = yield* buildRequest(SchemaPayloadActor, "Place", { item: "sql-schema-dup" });
+      const b = yield* buildRequest(SchemaPayloadActor, "Place", { item: "sql-schema-dup" });
+      yield* mailbox.send(a);
+      yield* mailbox.send(b);
+
+      const rows = yield* sql<{ readonly count: number | bigint }>`
+        SELECT COUNT(*) AS count
+        FROM cluster_messages
+        WHERE entity_type = ${a.envelope.address.entityType}
+          AND entity_id = ${a.envelope.address.entityId}
+          AND tag = ${a.envelope.tag}
+      `;
+      expect(rows).toHaveLength(1);
+      expect(String(rows[0]?.count)).toBe("1");
+    }).pipe(Effect.provide(SqlTestStack)),
   );
 });
 

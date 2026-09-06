@@ -1,8 +1,9 @@
 import { describe, expect, it, test } from "effect-bun-test";
-import { Context, DateTime, Effect, Layer, PrimaryKey, Schema } from "effect";
+import { Context, DateTime, Effect, Layer, PrimaryKey, Schema, SchemaGetter } from "effect";
 import { ClusterSchema, ShardingConfig } from "effect/unstable/cluster";
 import * as DeliverAt from "effect/unstable/cluster/DeliverAt";
 import { Actor } from "../src/index.js";
+import { unwrapOpaquePayload } from "../src/internal/invocation-compiler.js";
 
 // Fixed instant: these cases assert DeliverAt/PrimaryKey wiring, not the clock.
 const FIXED_EPOCH_MS = 1_700_000_000_000;
@@ -261,9 +262,177 @@ describe("scalar payload", () => {
       expect(String(execId)).toBe("test\x00Say\x00test");
     }),
   );
+
+  test("preserves opaque scalar codecs while attaching a primary key carrier", () => {
+    const rpc = Echo._meta.entity.protocol.requests.get("Say")!;
+    const instance = rpc.payloadSchema.make("hello");
+    expect(PrimaryKey.isPrimaryKey(instance)).toBe(true);
+    if (PrimaryKey.isPrimaryKey(instance)) {
+      expect(PrimaryKey.value(instance)).toBe("hello");
+    }
+    expect(Schema.encodeUnknownSync(rpc.payloadSchema)(instance)).toBe("hello");
+    const decoded = Schema.decodeSync(rpc.payloadSchema)("decoded");
+    expect(PrimaryKey.isPrimaryKey(decoded)).toBe(true);
+    if (PrimaryKey.isPrimaryKey(decoded)) {
+      expect(PrimaryKey.value(decoded)).toBe("decoded");
+    }
+  });
+
+  test("attaches identity to opaque object-union schemas", () => {
+    const UnionActor = Actor.fromEntity("UnionPayload", {
+      Run: {
+        payload: Schema.Union([Schema.String, Schema.Struct({ id: Schema.String })]),
+        id: (payload: string | { readonly id: string }) => {
+          if (Schema.is(Schema.String)(payload)) return payload;
+          return payload.id;
+        },
+      },
+    });
+    const rpc = UnionActor._meta.entity.protocol.requests.get("Run")!;
+    const scalar = rpc.payloadSchema.make("union-scalar");
+    const object = rpc.payloadSchema.make({ id: "union-object" });
+
+    expect(PrimaryKey.isPrimaryKey(scalar)).toBe(true);
+    expect(PrimaryKey.isPrimaryKey(object)).toBe(true);
+    if (PrimaryKey.isPrimaryKey(scalar) && PrimaryKey.isPrimaryKey(object)) {
+      expect(PrimaryKey.value(scalar)).toBe("union-scalar");
+      expect(PrimaryKey.value(object)).toBe("union-object");
+    }
+    expect(Schema.encodeUnknownSync(rpc.payloadSchema)(scalar)).toBe("union-scalar");
+    expect(Schema.encodeUnknownSync(rpc.payloadSchema)(object)).toEqual({ id: "union-object" });
+  });
 });
 
 describe("deliverAt", () => {
+  test("attaches PrimaryKey.symbol to schema payload instances", () => {
+    const WithSchemaPayload = Actor.fromEntity("WithSchemaPayload", {
+      Op: {
+        payload: Schema.Struct({ id: Schema.String }),
+        id: (payload: { readonly id: string }) => payload.id,
+      },
+    });
+
+    const rpc = WithSchemaPayload._meta.entity.protocol.requests.get("Op")!;
+    const instance = rpc.payloadSchema.make({ id: "schema-abc" });
+
+    expect(PrimaryKey.isPrimaryKey(instance)).toBe(true);
+    if (PrimaryKey.isPrimaryKey(instance)) {
+      expect(PrimaryKey.value(instance)).toBe("schema-abc");
+    }
+  });
+
+  test("preserves transformed schema payload codecs while adding identity", () => {
+    const DecodedPayload = Schema.Struct({
+      id: Schema.String,
+      value: Schema.String,
+    }).pipe(
+      Schema.decodeTo(Schema.Struct({ id: Schema.String, value: Schema.Finite }), {
+        decode: SchemaGetter.transform((payload) => ({
+          id: payload.id,
+          value: Number(payload.value),
+        })),
+        encode: SchemaGetter.transform((payload) => ({
+          id: payload.id,
+          value: String(payload.value),
+        })),
+      }),
+    );
+    const WithDecodedPayload = Actor.fromEntity("WithDecodedPayload", {
+      Op: {
+        payload: DecodedPayload,
+        id: (payload: { readonly id: string; readonly value: number }) => payload.id,
+      },
+    });
+
+    const rpc = WithDecodedPayload._meta.entity.protocol.requests.get("Op")!;
+    const decodedCarrier = Schema.decodeSync(rpc.payloadSchema)({
+      id: "decoded-abc",
+      value: "42",
+    });
+    const decoded = Schema.decodeUnknownSync(
+      Schema.Struct({ id: Schema.String, value: Schema.Finite }),
+    )(unwrapOpaquePayload(decodedCarrier));
+    const encoded = Schema.encodeUnknownSync(rpc.payloadSchema)(decodedCarrier);
+
+    expect(decoded.value).toBe(42);
+    expect(encoded).toEqual({ id: "decoded-abc", value: "42" });
+    expect(PrimaryKey.isPrimaryKey(decodedCarrier)).toBe(true);
+    if (PrimaryKey.isPrimaryKey(decodedCarrier)) {
+      expect(PrimaryKey.value(decodedCarrier)).toBe("decoded-abc");
+    }
+  });
+
+  it.scopedLive("preserves transformed Schema.Class methods while adding identity", () => {
+    class DecodedPayload extends Schema.Class<DecodedPayload>("test/DecodedPayload")({
+      id: Schema.String,
+    }) {
+      key(): string {
+        return this.id;
+      }
+    }
+    const EncodedPayload = Schema.String.pipe(
+      Schema.decodeTo(DecodedPayload, {
+        decode: SchemaGetter.transform((id) => DecodedPayload.make({ id })),
+        encode: SchemaGetter.transform((payload) => payload.id),
+      }),
+    );
+    const WithDecodedClass = Actor.fromEntity("WithDecodedClass", {
+      Run: {
+        payload: EncodedPayload,
+        success: Schema.String,
+        id: (payload: DecodedPayload) => payload.key(),
+      },
+    });
+    const rpc = WithDecodedClass._meta.entity.protocol.requests.get("Run")!;
+    const decodedCarrier = Schema.decodeSync(rpc.payloadSchema)("class-roundtrip");
+    const decoded = Schema.decodeUnknownSync(DecodedPayload)(unwrapOpaquePayload(decodedCarrier));
+
+    expect(Schema.is(DecodedPayload)(decoded)).toBe(true);
+    expect(decoded.key()).toBe("class-roundtrip");
+    expect(PrimaryKey.isPrimaryKey(decodedCarrier)).toBe(true);
+    if (PrimaryKey.isPrimaryKey(decodedCarrier)) {
+      expect(PrimaryKey.value(decodedCarrier)).toBe("class-roundtrip");
+    }
+    expect(Schema.encodeUnknownSync(rpc.payloadSchema)(decodedCarrier)).toBe("class-roundtrip");
+
+    const HandlerLayer = Layer.provide(
+      Actor.toTestLayer(WithDecodedClass, {
+        Run: ({ operation }) =>
+          Effect.succeed(
+            `${operation._payload.key()}:${Schema.is(DecodedPayload)(operation._payload)}`,
+          ),
+      }),
+      TestShardingConfig,
+    );
+    return Effect.gen(function* () {
+      const result = yield* WithDecodedClass.Run.execute(DecodedPayload.make({ id: "handler" }));
+      expect(result).toBe("handler:true");
+    }).pipe(Effect.provide(HandlerLayer));
+  });
+
+  test("attaches both identity protocols to schema payload instances", () => {
+    const WithSchemaDelivery = Actor.fromEntity("WithSchemaDelivery", {
+      Op: {
+        payload: Schema.Struct({ id: Schema.String, when: Schema.DateTimeUtc }),
+        id: (payload: { readonly id: string }) => payload.id,
+        deliverAt: (payload: { readonly when: DateTime.DateTime }) => payload.when,
+      },
+    });
+
+    const rpc = WithSchemaDelivery._meta.entity.protocol.requests.get("Op")!;
+    const when = DateTime.makeUnsafe(FIXED_EPOCH_MS);
+    const instance = rpc.payloadSchema.make({ id: "schema-delivery", when });
+
+    expect(PrimaryKey.isPrimaryKey(instance)).toBe(true);
+    expect(DeliverAt.isDeliverAt(instance)).toBe(true);
+    if (PrimaryKey.isPrimaryKey(instance)) {
+      expect(PrimaryKey.value(instance)).toBe("schema-delivery");
+    }
+    if (DeliverAt.isDeliverAt(instance)) {
+      expect(DeliverAt.toMillis(instance)).toBe(FIXED_EPOCH_MS);
+    }
+  });
+
   test("attaches DeliverAt.symbol to payload instances when deliverAt is configured", () => {
     const Delayed = Actor.fromEntity("Delayed", {
       Process: {
@@ -350,6 +519,37 @@ describe("deliverAt", () => {
 
     expect(instance[PrimaryKey.symbol]()).toBe("xyz");
     expect(rpc.payloadSchema).toBe(CustomPayload);
+  });
+
+  test("preserves Schema.Class methods while adding identity protocols", () => {
+    class ClassWithoutProtocols extends Schema.Class<ClassWithoutProtocols>(
+      "test/ClassWithoutProtocols",
+    )({
+      id: Schema.String,
+    }) {
+      describe(): string {
+        return `payload:${this.id}`;
+      }
+    }
+
+    const WithClass = Actor.fromEntity("WithClass", {
+      Process: {
+        payload: ClassWithoutProtocols,
+        id: (p: { id: string }) => p.id,
+      },
+    });
+    const rpc = WithClass._meta.entity.protocol.requests.get("Process")!;
+    const instance = rpc.payloadSchema.make({ id: "class-make" });
+    const decoded = Schema.decodeSync(rpc.payloadSchema)({ id: "class-decode" });
+
+    expect(instance.describe()).toBe("payload:class-make");
+    expect(decoded.describe()).toBe("payload:class-decode");
+    expect(PrimaryKey.isPrimaryKey(instance)).toBe(true);
+    expect(PrimaryKey.isPrimaryKey(decoded)).toBe(true);
+    if (PrimaryKey.isPrimaryKey(instance) && PrimaryKey.isPrimaryKey(decoded)) {
+      expect(PrimaryKey.value(instance)).toBe("class-make");
+      expect(PrimaryKey.value(decoded)).toBe("class-decode");
+    }
   });
 
   test("pre-built Schema.Class with DeliverAt works", () => {
