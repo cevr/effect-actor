@@ -1,5 +1,11 @@
 # effect-encore
 
+## 0.29.2
+
+### Patch Changes
+
+- [#62](https://github.com/cevr/effect-encore/pull/62) [`cc64915`](https://github.com/cevr/effect-encore/commit/cc64915136e6bb37f7e780caac3be6dbac6deaae) Thanks [@cevr](https://github.com/cevr)! - `provideLayerBuildContext` no longer captures `CurrentAddress`, `CurrentRunnerAddress`, `ActorStateRegistry`, or `Scope` from the layer-build fiber. An actor layer built inside another actor's handler previously read the outer entity's address in its handler build.
+
 ## 0.29.1
 
 ### Patch Changes
