@@ -1,6 +1,13 @@
 import { describe, expect, it } from "effect-bun-test";
 import { Context, Effect, Layer, Schema } from "effect";
-import { ShardingConfig } from "effect/unstable/cluster";
+import {
+  EntityAddress,
+  EntityId,
+  EntityType,
+  ShardId,
+  ShardingConfig,
+} from "effect/unstable/cluster";
+import { CurrentAddress } from "effect/unstable/cluster/Entity";
 import { Actor } from "../src/index.js";
 
 const TestShardingConfig = ShardingConfig.layer({
@@ -71,6 +78,36 @@ const CapturedLayer = Layer.provide(
   Layer.merge(TestShardingConfig, Layer.succeed(LayerToken, "captured-layer-token")),
 );
 
+const Nested = Actor.fromEntity("Nested", {
+  WhoAmI: {
+    payload: { id: Schema.String },
+    success: Schema.String,
+    id: (p: { id: string }) => p.id,
+  },
+});
+
+// Models an actor layer built inside another actor's handler: the fiber
+// context at layer-build time already carries an outer `CurrentAddress`.
+const outerAddress = EntityAddress.make({
+  shardId: ShardId.make("default", 1),
+  entityType: EntityType.make("Outer"),
+  entityId: EntityId.make("outer-entity"),
+});
+
+const NestedLayer = Layer.provide(
+  Layer.unwrap(
+    Actor.provideLayerBuildContext(
+      Effect.gen(function* () {
+        const address = yield* CurrentAddress;
+        return Nested.of({
+          WhoAmI: () => Effect.succeed(address.entityId),
+        });
+      }),
+    ).pipe(Effect.map((build) => Actor.toTestLayer(Nested, build))),
+  ),
+  Layer.merge(TestShardingConfig, Layer.succeed(CurrentAddress, outerAddress)),
+);
+
 const DynamicLayer = Layer.provide(
   Actor.toTestLayer(
     Dynamic,
@@ -84,6 +121,7 @@ const DynamicLayer = Layer.provide(
 const scopedTest = it.scopedLive.layer(ScopedLayer);
 const capturedTest = it.scopedLive.layer(CapturedLayer);
 const dynamicTest = it.scopedLive.layer(DynamicLayer);
+const nestedTest = it.scopedLive.layer(NestedLayer);
 
 describe("Actor.toLayer({ withScope })", () => {
   scopedTest("handler reads a Tag built per-call from the entity address", () =>
@@ -114,6 +152,17 @@ describe("Actor.toLayer({ withScope })", () => {
       const value = yield* ref.execute(Captured.Read.make({ id: "alpha" }));
       expect(value).toBe("captured-layer-token");
     }),
+  );
+
+  nestedTest(
+    "handler build keeps its own entity address when the layer is built inside another actor",
+    () =>
+      Effect.gen(function* () {
+        const makeRef = yield* Nested.Context;
+        const ref = yield* makeRef("inner-entity");
+        const value = yield* ref.execute(Nested.WhoAmI.make({ id: "inner-entity" }));
+        expect(value).toBe("inner-entity");
+      }),
   );
 
   dynamicTest("caller-provided services override actor layer services", () =>
