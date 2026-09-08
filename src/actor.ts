@@ -7,7 +7,7 @@ import {
   type ShardingConfig,
   Snowflake,
 } from "effect/unstable/cluster";
-import { CurrentAddress, type CurrentRunnerAddress } from "effect/unstable/cluster/Entity";
+import { CurrentAddress, CurrentRunnerAddress } from "effect/unstable/cluster/Entity";
 import type {
   AlreadyProcessingMessage,
   EntityNotAssignedToRunner,
@@ -32,9 +32,10 @@ import {
   Pipeable,
   Predicate,
   Schema,
+  Scope,
   Stream,
 } from "effect";
-import type { Schedule, Scope } from "effect";
+import type { Schedule } from "effect";
 import { dual } from "effect/Function";
 import type { SignalDefs, WorkflowStepContext } from "./step.js";
 import type { ExecId, PeekResult } from "./receipt.js";
@@ -471,8 +472,32 @@ export const provideLayerBuildContext = <A, E, R>(
   Exclude<R, ActorLayerBuildContextExclusions>
 > =>
   Effect.context<Exclude<R, ActorLayerBuildContextExclusions>>().pipe(
-    Effect.map((context) => provideCapturedLayerBuildContext(build, context)),
+    Effect.map((context) =>
+      provideCapturedLayerBuildContext(build, omitLayerBuildContextExclusions(context)),
+    ),
   );
+
+/**
+ * The layer-build context is captured wherever the actor layer is built. When
+ * that happens inside another actor's handler (a nested composition root), the
+ * fiber context carries that outer actor's `CurrentAddress`, runner address,
+ * state registry, and scope. Those must not shadow the values the entity
+ * manager provides to the handler build, or the inner actor would read the
+ * outer entity's identity.
+ */
+function omitLayerBuildContextExclusions<R>(
+  context: Context.Context<Exclude<R, ActorLayerBuildContextExclusions>>,
+): Context.Context<Exclude<R, ActorLayerBuildContextExclusions>>;
+function omitLayerBuildContextExclusions<R>(
+  context: Context.Context<Exclude<R, ActorLayerBuildContextExclusions>>,
+): unknown {
+  return Context.omit(
+    Scope.Scope,
+    CurrentAddress,
+    CurrentRunnerAddress,
+    ActorStateRegistry,
+  )(context);
+}
 
 /**
  * Typed state declaration for an entity. When supplied via `fromEntity`'s
