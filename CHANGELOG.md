@@ -1,5 +1,24 @@
 # effect-encore
 
+## 0.30.0
+
+### Minor Changes
+
+- [#64](https://github.com/cevr/effect-encore/pull/64) [`0600d4b`](https://github.com/cevr/effect-encore/commit/0600d4b2a4669d9ce3355f5706fb3a0304433508) Thanks [@cevr](https://github.com/cevr)! - Export `ActorStateRegistry` and its query functions from the package root
+
+  `Actor.toLayer` merges `ActorStateRegistry.Live` into the consumer's context, so
+  the registry was already reachable at runtime — but the Tag was not exported,
+  leaving no way to name it.
+
+  That left the actor's own `State` client as the only route to enumerate live
+  entities, which is unusable from anything built _beneath_ the actor: requiring
+  `ActorStateClientService<Name>` there makes the layer that builds the actor
+  depend on the actor it builds.
+
+  Now exported: `ActorStateRegistry`, `ActorStateRegistryService`,
+  `listStateEntityIds`, `stateOf`, `watchStateOf`, and `waitForStateOf`. The
+  decode plumbing (`makeActorStateObservation`) stays internal.
+
 ## 0.29.2
 
 ### Patch Changes
