@@ -1,7 +1,7 @@
 import { describe, expect, it } from "effect-bun-test";
 import { Context, Effect, Fiber, Layer, Schema, Stream, SubscriptionRef } from "effect";
 import { ShardingConfig } from "effect/unstable/cluster";
-import { Actor } from "../src/index.js";
+import { Actor, ActorStateRegistry, listStateEntityIds } from "../src/index.js";
 
 const TestShardingConfig = ShardingConfig.layer({
   shardsPerGroup: 300,
@@ -164,6 +164,22 @@ describe("Actor state protocol", () => {
       expect(yield* state.get("state-service")).toBe(3);
       expect(yield* state.waitFor("state-service", (value) => value >= 3)).toBe(3);
       expect(yield* state.listEntityIds).toContain("state-service");
+    }));
+
+  test("the state registry is reachable from the barrel without an actor client", () =>
+    Effect.gen(function* () {
+      // A consumer that sits *beneath* an actor cannot yield that actor's
+      // `State` client to enumerate entities: the actor is built from the layer
+      // that would then depend on it. `ActorStateRegistry` is merged into the
+      // consumer's context by `toLayer`, so reading it directly is the
+      // cycle-free route — but only if the Tag is exported.
+      const makeRef = yield* Stateful.Context;
+      const ref = yield* makeRef("registry-direct");
+      yield* ref.execute(Stateful.Increment.make({ id: "registry-direct", amount: 1 }));
+
+      const registry = yield* ActorStateRegistry;
+      expect(yield* registry.list("Stateful")).toContain("registry-direct");
+      expect(yield* listStateEntityIds("Stateful")).toContain("registry-direct");
     }));
 
   test("Control service exposes bound mailbox operations", () =>
