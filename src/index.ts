@@ -1,5 +1,14 @@
 export { Actor, CurrentAddress, fromRpcs, SendAndAwaitTimeout, withProtocol } from "./actor.js";
-export { ActorStateUnavailable, registerState } from "./actor-state.js";
+export {
+  ActorStateRegistry,
+  ActorStateUnavailable,
+  listStateEntityIds,
+  registerState,
+  stateOf,
+  waitForStateOf,
+  watchStateOf,
+} from "./actor-state.js";
+export type { ActorStateRegistryService } from "./actor-state.js";
 export type {
   EntityActor,
   AnyEntityActor,
